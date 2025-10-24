@@ -1,0 +1,19 @@
+{
+  "name": "twitter_images",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "ocr": "node src/extract-text.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "gallery-dl": "^1.0.2",
+    "mime-types": "^3.0.1",
+    "openai": "^6.7.0"
+  }
+}
