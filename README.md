@@ -63,7 +63,7 @@ Al terminar, si hay reflexión interna oculta verás el mensaje `Presioná [r] p
 
 ### Resultado final
 
-El único bloque mostrado por defecto es un resumen de 3‑7 párrafos (3‑5 líneas cada uno) en voz Musk, explicando con claridad la idea central del video/imágenes. El primer párrafo arranca con “INTERPRETACIÓN PRAGMÁTICA:” y el último con “RESPUESTA:”. Todo lo demás (interpretación intermedia, texto del tweet/caption, reflexión interna) queda detrás del modal interactivo o en el log.
+El único bloque mostrado por defecto es un resumen de 3‑7 párrafos (3‑5 líneas cada uno) en voz Musk, explicando con claridad la idea central del video/imágenes, como si te lo contara en persona. Todo lo demás (interpretación intermedia, texto del tweet/caption, reflexión interna) queda detrás del modal interactivo o en el log.
 
 ### Depuración total
 
@@ -94,7 +94,7 @@ Behind the scenes:
 2. Images go through the multimodal model (`OPENAI_OCR_MODEL`, default `gpt-4.1-mini`).
 3. Videos and audio go through Whisper (`OPENAI_TRANSCRIBE_MODEL`, default `whisper-1`).
 4. Text files (e.g., tweet captions saved by `gallery-dl`) are read directly.
-5. Results feed into the post-processor defined in `prompts/agent_prompt.txt`, powered by `gpt-5-codex` with high reasoning effort, which always outputs:
+5. Results feed into the post-processor defined in `prompts/agent_prompt.txt`, powered by `gpt-5-codex` con razonamiento “high” y una ventana 400K/128K tokens según [OpenAI](https://openai.com/gpt-5/), lo que deja margen amplio para contexto, y siempre produce:
    - `<internal_reflection>` long-form reasoning (visible sólo si lo pedís)
    - `<action_plan>` la interpretación pragmática (oculta por defecto)
    - `<final_response>` 3‑7 párrafos en voz Musk que se muestran como output final
@@ -107,5 +107,6 @@ Behind the scenes:
 - Store frequently used briefs in `prompts/*.txt` and reference them with `--style-file`.
 - `current_session.txt` accumulates every XML response; clear it when you need a fresh log.
 - No borres los `.json` que generan gallery-dl / yt-dlp; contienen el texto original del tweet/caption y se usan como contexto.
+- Si necesitás limitar el tamaño de salida del agente, ajustá `OPENAI_AGENT_MAX_OUTPUT_TOKENS` (default 128 000).
 
 The entire experience is optimized for a two-word command: paste the URL, add a short preset tag, and let the tool do the rest. The raw text, transcriptions, contexto, interpretación y respuesta final quedan listas en una sola corrida.

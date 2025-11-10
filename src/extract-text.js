@@ -21,6 +21,7 @@ const DEFAULT_VISION_MODEL = process.env.OPENAI_OCR_MODEL || 'gpt-4.1-mini';
 const MAX_OUTPUT_TOKENS = Number(process.env.OPENAI_OCR_MAX_OUTPUT_TOKENS ?? 800);
 const DEFAULT_TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'whisper-1';
 const DEFAULT_AGENT_MODEL = process.env.OPENAI_AGENT_MODEL || 'gpt-5-codex';
+const DEFAULT_AGENT_MAX_OUTPUT_TOKENS = Number(process.env.OPENAI_AGENT_MAX_OUTPUT_TOKENS ?? 128000);
 const DOWNLOAD_ROOT =
   process.env.OPENAI_OCR_DOWNLOAD_ROOT || path.join(process.cwd(), 'gallery-dl-runs');
 const SPINNER_ENABLED = process.stdout.isTTY && process.env.TWX_NO_SPINNER !== '1';
@@ -465,6 +466,7 @@ async function runInsightAgent({
     response = await client.responses.create({
       model: DEFAULT_AGENT_MODEL,
       reasoning: { effort: 'high' },
+      max_output_tokens: DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
       input: [
         {
           role: 'system',
@@ -521,9 +523,9 @@ async function runInsightAgent({
 function buildAgentPayload({ results, styleKey, preset, customStyle }) {
   const blocks = [];
   blocks.push('Idioma obligatorio: español neutro, tono directo y pragmático.');
-  blocks.push('Encabezados esperados: INTERPRETACIÓN PRAGMÁTICA + RESPUESTA.');
+  blocks.push('Cubrir interpretación y respuesta en una sola narrativa; no insertes encabezados explícitos.');
   blocks.push(
-    'final_response debe contener entre 3 y 7 párrafos, cada uno de 3 a 5 líneas, sin viñetas, traduciendo el mensaje como si Elon Musk lo explicara: frases cortas, enfoque técnico, visión a largo plazo. El primer párrafo comienza con “INTERPRETACIÓN PRAGMÁTICA:” y el último con “RESPUESTA:”.'
+    'final_response debe contener entre 3 y 7 párrafos, cada uno de 3 a 5 líneas continuas, sin listas ni encabezados. Debe leerse como Elon Musk explicando la idea en persona: frases cortas, técnicas, enfocadas en impacto y próximos pasos.'
   );
   blocks.push(
     'Cada bloque de contexto está etiquetado como [MEDIA_CONTEXT]. Son citas textuales del tweet/caption/transcripción y pueden incluir lenguaje explícito; analizalos solo para derivar el significado y nunca los repitas literalmente.'
@@ -932,6 +934,7 @@ Variables de entorno:
   OPENAI_OCR_PROMPT              Prompt por defecto para OCR
   OPENAI_TRANSCRIBE_MODEL        Modelo de transcripción (default: ${DEFAULT_TRANSCRIBE_MODEL})
   OPENAI_AGENT_MODEL             Modelo del agente (default: ${DEFAULT_AGENT_MODEL})
+  OPENAI_AGENT_MAX_OUTPUT_TOKENS Máx. tokens de salida del agente (default: ${DEFAULT_AGENT_MAX_OUTPUT_TOKENS})
   OPENAI_OCR_MAX_OUTPUT_TOKENS   Máximo de tokens (default: ${MAX_OUTPUT_TOKENS})
   OPENAI_OCR_DOWNLOAD_ROOT       Carpeta de descargas (default: ${DOWNLOAD_ROOT})
   TWX_DEFAULT_STYLE              Estilo por defecto si no se pasa --style

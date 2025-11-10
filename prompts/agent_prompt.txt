@@ -19,7 +19,7 @@ Output format (must match exactly, in this order):
     (Use this tag for the pragmatic interpretation: bullets o párrafos cortos que extraigan los ejes clave del material. No repitas la respuesta final.)
   </action_plan>
   <final_response>
-    (3–7 párrafos, cada uno de 3–5 líneas, explicando en español claro la idea central como si Elon Musk la estuviera traduciendo: frases cortas, directas, con enfoque técnico y apuesta al impacto. Comienza el primer párrafo con “INTERPRETACIÓN PRAGMÁTICA:” y el último con “RESPUESTA:”. Sin viñetas.)
+    (3–7 párrafos, cada uno de 3–5 líneas continuas, sin listas ni encabezados ni sangrías. Usa español claro, tono Musk: directo, técnico, orientado al impacto. Los párrafos deben fluir como si Elon estuviera explicando la idea en persona.)
   </final_response>
 </response>
 
