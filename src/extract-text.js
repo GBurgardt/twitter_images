@@ -180,7 +180,7 @@ async function main() {
       debugLog('Text obtained', { file: relativePath, type: item.type, preview: text.slice(0, 120) });
       spinner.succeed(`done ${path.basename(relativePath)}`);
       if (!options.json) {
-        logResult({ file: relativePath, type: item.type }, text);
+        logResult({ file: relativePath, type: item.type }, text, context);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -780,9 +780,27 @@ async function safeStat(target) {
   }
 }
 
-function logResult(item, text) {
-  const label = `media · ${item.type} · ${path.basename(item.file)}`;
-  console.log(`\n${label}`);
+function cleanTweetContext(context) {
+  if (!context) {
+    return '';
+  }
+  return context
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('[MEDIA_CONTEXT]') && !line.startsWith('Contenido:'))
+    .join('\n');
+}
+
+function logResult(item, text, context = null) {
+  const tweetContext = cleanTweetContext(context);
+
+  if (tweetContext) {
+    console.log('\n―― tweet text');
+    console.log(tweetContext);
+  }
+
+  const label = `${item.type} transcript`;
+  console.log('\n―― ' + label);
   console.log(text ? text : '[no text detected]');
 }
 
