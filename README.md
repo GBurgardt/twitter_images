@@ -61,6 +61,10 @@ El CLI usa spinners de [ora](https://github.com/sindresorhus/ora) para mostrar e
 
 Al terminar, si hay reflexión interna oculta verás el mensaje `Presioná [r] para leerla ahora`. Ese atajo limpia la pantalla, muestra la reflexión completa y te deja volver al resumen con `[b]`. Si no querés interactuar, simplemente tocá Enter y quedará guardada en `current_session.txt`.
 
+### Resultado final
+
+El único bloque mostrado por defecto es un resumen de 3‑7 párrafos (3‑5 líneas cada uno) en voz Musk, explicando con claridad la idea central del video/imágenes. El primer párrafo arranca con “INTERPRETACIÓN PRAGMÁTICA:” y el último con “RESPUESTA:”. Todo lo demás (interpretación intermedia y reflexión interna) queda detrás del modal interactivo o en el log.
+
 ### Depuración total
 
 Si necesitás ver absolutamente todo (payloads enviados, respuesta XML, rutas internas), agrega `--debug` al comando o exportá `TWX_DEBUG=1`. En ese modo se imprime cada paso del pipeline y la respuesta cruda del SDK para inspeccionar formatos.
@@ -91,9 +95,9 @@ Behind the scenes:
 3. Videos and audio go through Whisper (`OPENAI_TRANSCRIBE_MODEL`, default `whisper-1`).
 4. Text files (e.g., tweet captions saved by `gallery-dl`) are read directly.
 5. Results feed into the post-processor defined in `prompts/agent_prompt.txt`, powered by `gpt-5-codex` with high reasoning effort, which always outputs:
-   - `<internal_reflection>` long-form reasoning (hidden unless requested)
-   - `<action_plan>` la interpretación/principales ideas
-   - `<final_response>` la explicación breve en el tono solicitado
+   - `<internal_reflection>` long-form reasoning (visible sólo si lo pedís)
+   - `<action_plan>` la interpretación pragmática (oculta por defecto)
+   - `<final_response>` 3‑7 párrafos en voz Musk que se muestran como output final
 
 ## Tips
 

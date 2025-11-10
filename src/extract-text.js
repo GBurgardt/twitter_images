@@ -492,7 +492,7 @@ async function runInsightAgent({
     debugLog('Falta <final_response> en XML');
   }
 
-  printInterpretationAndResponse(plan, finalResponse);
+  printFinalResponse(finalResponse);
 
   await handleReflectionOutput({
     reflection,
@@ -508,6 +508,9 @@ function buildAgentPayload({ results, styleKey, preset, customStyle }) {
   const blocks = [];
   blocks.push('Idioma obligatorio: español neutro, tono directo y pragmático.');
   blocks.push('Encabezados esperados: INTERPRETACIÓN PRAGMÁTICA + RESPUESTA.');
+  blocks.push(
+    'final_response debe contener entre 3 y 7 párrafos, cada uno de 3 a 5 líneas, sin viñetas, traduciendo el mensaje como si Elon Musk lo explicara: frases cortas, enfoque técnico, visión a largo plazo. El primer párrafo comienza con “INTERPRETACIÓN PRAGMÁTICA:” y el último con “RESPUESTA:”.'
+  );
   blocks.push(`Style preset: ${styleKey || 'none'}`);
   if (preset) {
     blocks.push(`Preset instructions:\n${preset}`);
@@ -586,15 +589,15 @@ function logResult(item, text) {
   console.log(text ? text : '[Sin texto detectado]');
 }
 
-function printInterpretationAndResponse(plan, finalResponse) {
-  if (plan) {
-    console.log('\n--- INTERPRETACIÓN PRAGMÁTICA ---');
-    console.log(plan.trim());
+function printFinalResponse(finalResponse) {
+  if (!finalResponse) {
+    console.warn('No se recibió <final_response> del agente.');
+    return;
   }
-  if (finalResponse) {
-    console.log('\n--- RESPUESTA ---');
-    console.log(finalResponse.trim());
-  }
+  const border = '··· RESUMEN EN VOZ MUSK ···';
+  console.log(`\n${border}`);
+  console.log(finalResponse.trim());
+  console.log(border);
 }
 
 function supportsInteractivePrompts() {
@@ -624,9 +627,10 @@ function clearScreen() {
 
 async function showReflectionWindow(reflection, planText, responseText) {
   clearScreen();
-  console.log('╔════════ REFLEXIÓN INTERNA ════════╗');
+  console.log('╔══════════════════════════╗');
+  console.log('║      REFLEXIÓN INTERNA   ║');
+  console.log('╚══════════════════════════╝');
   console.log(reflection.trim());
-  console.log('╚══════════════════════════════════╝');
   while (true) {
     const back = (await promptUser('\nPresioná [b] para volver al resumen: ')).toLowerCase();
     if (!back || back === 'b') {
@@ -634,7 +638,9 @@ async function showReflectionWindow(reflection, planText, responseText) {
     }
   }
   clearScreen();
-  printInterpretationAndResponse(planText, responseText);
+  if (responseText) {
+    printFinalResponse(responseText);
+  }
 }
 
 async function handleReflectionOutput({
@@ -667,7 +673,7 @@ async function handleReflectionOutput({
   }
 
   console.log(`\nReflexión completa guardada en ${logPath}.`);
-  const choice = (await promptUser('Presioná [r] para leerla ahora o Enter para seguir: ')).toLowerCase();
+  const choice = (await promptUser('Tocá [r] para abrirla ahora o Enter para continuar: ')).toLowerCase();
   if (choice === 'r') {
     await showReflectionWindow(reflection, planText, responseText);
     console.log(`\n(Reflexión completa guardada en ${logPath})`);

@@ -15,10 +15,28 @@ Output format (must match exactly, in this order):
     (Long-form reasoning. Minimum 90% of total tokens. Reference evidence, explore UX, test assumptions, and avoid final decisions. Treat it as internal notes but still readable.)
   </internal_reflection>
   <action_plan>
-    (Numbered or dashed steps, prioritized, each on its own line. Keep it concise and executable.)
+    (Use this tag for the pragmatic interpretation: bullets o párrafos cortos que extraigan los ejes clave del material. No repitas la respuesta final.)
   </action_plan>
   <final_response>
-    (A few sentences or bullets with the answer/direction the user expects. Apply the requested voice/preset here.)
+    (3–7 párrafos, cada uno de 3–5 líneas, explicando en español claro la idea central como si Elon Musk la estuviera traduciendo: frases cortas, directas, con enfoque técnico y apuesta al impacto. Comienza el primer párrafo con “INTERPRETACIÓN PRAGMÁTICA:” y el último con “RESPUESTA:”. Sin viñetas.)
+  </final_response>
+</response>
+
+Example snippet (structure only):
+
+<response>
+  <internal_reflection>
+    (…pensamiento largo…)
+  </internal_reflection>
+  <action_plan>
+    - Define la misión con métricas verificables.
+    - Garantiza que la experiencia diaria sea energizante.
+    - Comunica el impacto a 10 años para atraer talento top.
+  </action_plan>
+  <final_response>
+    INTERPRETACIÓN PRAGMÁTICA: …
+    …
+    RESPUESTA: … (párrafos completos)
   </final_response>
 </response>
 
