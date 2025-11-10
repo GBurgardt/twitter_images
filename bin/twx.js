@@ -23,7 +23,19 @@ if (!args.length) {
 const target = args[0];
 const maybeStyle = args[1] && !args[1].startsWith('-') ? args[1] : null;
 const restArgs = maybeStyle ? args.slice(2) : args.slice(1);
-const style = maybeStyle || process.env.TWX_DEFAULT_STYLE || 'musk';
+
+let style = maybeStyle || process.env.TWX_DEFAULT_STYLE || 'musk';
+let customInstruction = null;
+
+if (maybeStyle && maybeStyle.toLowerCase() === 'tell') {
+  style = 'musk';
+  const idx = restArgs.findIndex((arg) => !arg.startsWith('-'));
+  if (idx === -1) {
+    console.error('\nUsage: twx <url-or-path> tell "your instruction" [options]');
+    process.exit(1);
+  }
+  customInstruction = restArgs.splice(idx, 1)[0];
+}
 
 const cliArgs = [];
 if (/^https?:\/\//i.test(target)) {
@@ -34,6 +46,10 @@ if (/^https?:\/\//i.test(target)) {
 
 if (style) {
   cliArgs.push('--style', style);
+}
+
+if (customInstruction) {
+  cliArgs.push('--style-text', customInstruction);
 }
 
 cliArgs.push(...restArgs);

@@ -35,6 +35,7 @@ Examples:
 - `twx https://x.com/user/status/12345` → downloads the tweet, extracts all text, and returns a Musk-style plan + summary.
 - `twx https://youtu.be/clip buk` → pulls the YouTube audio via `yt-dlp`, transcribes with Whisper, and replies like Bukowski.
 - `twx ./gallery-dl/twitter/thread raw` → reuse an existing folder and just dump the raw transcript.
+- `twx https://x.com/... tell "explain how to pitch this in 30s"` → Musk tone + instrucción inline sin recordar `--style-text`.
 
 `style` is optional and defaults to `musk`. Aliases you can use as the second word:
 
@@ -44,8 +45,9 @@ Examples:
 | `bukowski` | `buk`, `bk` | Gritty, blunt recap |
 | `brief` | `brief`, `sum` | Three sharp executive bullets |
 | `raw` | `raw`, `plain`, `txt` | Skips GPT entirely; prints only the raw OCR/transcription |
+| `tell` | `tell` | Musk voice + quoted inline instruction |
 
-Need a custom voice? Create a text file with your instruction (e.g., `brief.txt`) and run:
+Need a custom voice? Either use the `tell` shorthand or create a text file with your instruction (e.g., `brief.txt`) and run:
 
 ```bash
 twx https://x.com/... musk --style-file brief.txt
