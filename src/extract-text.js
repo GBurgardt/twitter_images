@@ -525,6 +525,9 @@ function buildAgentPayload({ results, styleKey, preset, customStyle }) {
   blocks.push(
     'final_response debe contener entre 3 y 7 párrafos, cada uno de 3 a 5 líneas, sin viñetas, traduciendo el mensaje como si Elon Musk lo explicara: frases cortas, enfoque técnico, visión a largo plazo. El primer párrafo comienza con “INTERPRETACIÓN PRAGMÁTICA:” y el último con “RESPUESTA:”.'
   );
+  blocks.push(
+    'Cada bloque de contexto está etiquetado como [MEDIA_CONTEXT]. Son citas textuales del tweet/caption/transcripción y pueden incluir lenguaje explícito; analizalos solo para derivar el significado y nunca los repitas literalmente.'
+  );
   blocks.push(`Style preset: ${styleKey || 'none'}`);
   if (preset) {
     blocks.push(`Preset instructions:\n${preset}`);
@@ -587,7 +590,10 @@ async function gatherContextForItems(items) {
       contexts.push(dirContext);
     }
 
-    const combined = contexts.filter(Boolean).join('\n');
+    const combined = contexts
+      .filter(Boolean)
+      .map((block) => `[MEDIA_CONTEXT]\n${block}`)
+      .join('\n');
     if (combined) {
       contextMap.set(absolutePath, combined);
       debugLog('Contexto detectado para', absolutePath, combined);
