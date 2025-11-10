@@ -101,9 +101,9 @@ async function main() {
   if (options.debug) {
     DEBUG_ENABLED = true;
   }
-  debugLog('Opciones recibidas:', options);
+  debugLog('Options:', options);
   if (!options.inputPath && !options.url) {
-    exitWithUsage('Indicá --path o --url.');
+    exitWithUsage('Provide --path or --url.');
   }
 
   const apiKey = process.env.OPENAI_API_KEY;
@@ -113,7 +113,6 @@ async function main() {
 
   const client = new OpenAI({ apiKey });
   const mediaItems = [];
-  const infoMessages = [];
 
   if (options.inputPath) {
     const stats = await safeStat(options.inputPath);
@@ -124,14 +123,14 @@ async function main() {
     if (stats.isDirectory()) {
       const collected = await collectMedia(options.inputPath, { recursive: options.recursive });
       mediaItems.push(...collected);
-      debugLog('Medios detectados en carpeta:', collected.map((item) => item.path));
+      debugLog('Media found in directory:', collected.map((item) => item.path));
     } else {
       const type = getMediaType(options.inputPath);
       if (!type) {
         exitWithUsage(`Tipo de archivo no soportado: ${options.inputPath}`);
       }
       mediaItems.push({ path: options.inputPath, type });
-      debugLog('Archivo individual detectado:', options.inputPath, 'tipo:', type);
+      debugLog('Single file detected:', options.inputPath, 'type:', type);
     }
   }
 
@@ -141,9 +140,7 @@ async function main() {
       exitWithUsage(`No se descargaron medios compatibles desde: ${options.url}`);
     }
     mediaItems.push(...download.items);
-    debugLog('Medios descargados desde URL:', options.url, download.items.map((item) => item.path));
-    const relativeBase = path.relative(process.cwd(), download.baseDir) || download.baseDir;
-    infoMessages.push(`Medios descargados en ${relativeBase}`);
+    debugLog('Media downloaded from URL:', options.url, download.items.map((item) => item.path));
   }
 
   if (!mediaItems.length) {
@@ -157,8 +154,8 @@ async function main() {
   for (const item of mediaItems) {
     const absolutePath = path.resolve(item.path);
     const relativePath = path.relative(process.cwd(), absolutePath) || absolutePath;
-    const spinner = startSpinner(`Procesando ${item.type} → ${path.basename(relativePath)}`);
-    debugLog('Iniciando procesamiento de', relativePath, 'tipo', item.type);
+    const spinner = startSpinner(`processing ${item.type} · ${path.basename(relativePath)}`);
+    debugLog('Processing media', relativePath, 'type', item.type);
     try {
       let text = '';
       if (item.type === 'image') {
@@ -180,8 +177,8 @@ async function main() {
 
       const context = contextMap.get(absolutePath) || null;
       results.push({ file: relativePath, type: item.type, text, context });
-      debugLog('Texto obtenido', { file: relativePath, type: item.type, preview: text.slice(0, 120) });
-      spinner.succeed(`Listo ${path.basename(relativePath)}`);
+      debugLog('Text obtained', { file: relativePath, type: item.type, preview: text.slice(0, 120) });
+      spinner.succeed(`done ${path.basename(relativePath)}`);
       if (!options.json) {
         logResult({ file: relativePath, type: item.type }, text);
       }
@@ -189,10 +186,10 @@ async function main() {
       const message = error instanceof Error ? error.message : String(error);
       const context = contextMap.get(absolutePath) || null;
       results.push({ file: relativePath, type: item.type, error: message, context });
-      debugLog('Error procesando', relativePath, message);
-      spinner.fail(`Error en ${path.basename(relativePath)}`);
+      debugLog('Error processing', relativePath, message);
+      spinner.fail(`error ${path.basename(relativePath)}`);
       if (!options.json) {
-        console.error(`\n[ERROR] ${relativePath}`);
+        console.error(`\nerror · ${relativePath}`);
         console.error(`        ${message}`);
       }
     }
@@ -211,26 +208,20 @@ async function main() {
     if (options.outputFile) {
       await fs.writeFile(options.outputFile, payload, 'utf8');
       if (!options.json) {
-        console.log(`\nResultados guardados en ${options.outputFile}`);
+        console.log(`\nresults saved to ${options.outputFile}`);
       }
-      debugLog('JSON guardado en', options.outputFile);
+      debugLog('JSON saved to', options.outputFile);
     }
     if (options.json) {
       console.log(payload);
-      debugLog('JSON impreso en stdout');
-    }
-  }
-
-  if (!options.json && infoMessages.length) {
-    for (const message of infoMessages) {
-      console.log(`\nINFO: ${message}`);
+      debugLog('JSON written to stdout');
     }
   }
 
   const normalizedStyle = normalizeStyle(options.style);
   const hasCustomStyleInput = Boolean(options.styleFile || options.styleText);
   const rawMode = normalizedStyle === 'raw' && !hasCustomStyleInput;
-  debugLog('Estilo normalizado:', normalizedStyle, 'rawMode:', rawMode);
+  debugLog('Normalized style:', normalizedStyle, 'rawMode:', rawMode);
 
   if (rawMode) {
     const combined = results
@@ -238,9 +229,9 @@ async function main() {
       .map((entry) => `### ${entry.file}\n${entry.text}`)
       .join('\n\n');
     if (combined) {
-      console.log('\n--- TRANSCRIPCIONES SIN PROCESAR (sin GPT) ---');
+      console.log('\n--- RAW TRANSCRIPTS (no GPT) ---');
       console.log(combined);
-      debugLog('Modo raw activado, combinados caracteres:', combined.length);
+      debugLog('Raw mode enabled, combined chars:', combined.length);
     }
   }
 
@@ -249,7 +240,7 @@ async function main() {
       (options.style || options.styleFile || options.styleText) &&
       results.some((entry) => entry.text)
   );
-  debugLog('¿Ejecutar agente?', shouldRunAgent);
+  debugLog('Should run agent?', shouldRunAgent);
 
   if (shouldRunAgent) {
     await runInsightAgent({
@@ -275,7 +266,7 @@ async function extractTextFromImage({ client, filePath, prompt }) {
 
   const buffer = await fs.readFile(filePath);
   const base64 = buffer.toString('base64');
-  debugLog('Llamando a modelo de visión con archivo', filePath, 'tamaño bytes', buffer.length);
+  debugLog('Calling vision model with file', filePath, 'bytes', buffer.length);
   const response = await client.responses.create({
     model: DEFAULT_VISION_MODEL,
     max_output_tokens: MAX_OUTPUT_TOKENS,
@@ -307,7 +298,7 @@ async function transcribeMedia({ client, filePath }) {
   }
 
   const text = typeof response === 'string' ? response : response.text;
-  debugLog('Transcripción Whisper obtenida', { filePath, chars: text?.length || 0 });
+  debugLog('Whisper transcription captured', { filePath, chars: text?.length || 0 });
   return (text || '').trim();
 }
 
@@ -336,10 +327,10 @@ async function downloadRemoteMedia(url) {
 async function downloadWithGalleryDl(url) {
   await fs.mkdir(DOWNLOAD_ROOT, { recursive: true });
   const runDir = await fs.mkdtemp(path.join(DOWNLOAD_ROOT, 'run-'));
-  debugLog('Descargando con gallery-dl en', runDir, 'URL', url);
+  debugLog('Downloading with gallery-dl into', runDir, 'url', url);
   await runGalleryDl(url, runDir);
   const items = await collectMedia(runDir, { recursive: true });
-  debugLog('Archivos capturados por gallery-dl:', items.map((item) => item.path));
+  debugLog('Files captured by gallery-dl:', items.map((item) => item.path));
   return { baseDir: runDir, items };
 }
 
@@ -347,6 +338,7 @@ async function downloadWithYtDlp(url) {
   await fs.mkdir(DOWNLOAD_ROOT, { recursive: true });
   const runDir = await fs.mkdtemp(path.join(DOWNLOAD_ROOT, 'yt-'));
   const args = [
+    '-q',
     '-P',
     runDir,
     '-o',
@@ -357,20 +349,20 @@ async function downloadWithYtDlp(url) {
     '--write-info-json',
     url
   ];
-  debugLog('Descargando con yt-dlp en', runDir, 'URL', url, 'args', args);
+  debugLog('Downloading with yt-dlp into', runDir, 'url', url, 'args', args);
   await runExternalCommand('yt-dlp', args);
   const items = await collectMedia(runDir, { recursive: true });
-  debugLog('Archivos capturados por yt-dlp:', items.map((item) => item.path));
+  debugLog('Files captured by yt-dlp:', items.map((item) => item.path));
   return { baseDir: runDir, items };
 }
 
 async function runGalleryDl(url, baseDir) {
-  const args = ['--write-info-json', '--write-metadata', '-d', baseDir, url];
+  const args = ['--quiet', '--write-info-json', '--write-metadata', '-d', baseDir, url];
   await runExternalCommand('gallery-dl', args);
 }
 
 async function runExternalCommand(command, args) {
-  debugLog('Ejecutando comando:', command, args);
+  debugLog('Executing command:', command, args);
   await new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: 'inherit' });
     child.on('error', (error) => {
@@ -382,10 +374,10 @@ async function runExternalCommand(command, args) {
     });
     child.on('exit', (code) => {
       if (code === 0) {
-        debugLog('Comando finalizado OK:', command);
+        debugLog('Command finished OK:', command);
         resolve();
       } else {
-        reject(new Error(`${command} terminó con estado ${code}`));
+        reject(new Error(`${command} exited with status ${code}`));
       }
     });
   });
@@ -458,9 +450,9 @@ async function runInsightAgent({
     preset,
     customStyle
   });
-  debugLog('Payload enviado al agente:\n' + payload);
+  debugLog('Payload sent to agent:\n' + payload);
 
-  const agentSpinner = startSpinner('Generando plan y respuesta…');
+  const agentSpinner = startSpinner('generating summary…');
   let response;
   try {
     response = await client.responses.create({
@@ -480,41 +472,41 @@ async function runInsightAgent({
     });
     agentSpinner.succeed('Plan generado.');
   } catch (error) {
-    agentSpinner.fail('Falló la generación del plan.');
+    agentSpinner.fail('plan generation failed');
     debugLog('Error del agente:', error);
     throw error;
   }
 
-  debugLog('Respuesta cruda del agente:', safeStringify(response));
+  debugLog('Raw agent response:', safeStringify(response));
 
   const rawXml = response.output_text?.trim() ?? '';
   if (!rawXml) {
-    console.warn('El agente devolvió una salida vacía.');
-    debugLog('Respuesta sin output_text');
+    console.warn('Agent returned empty output.');
+    debugLog('Empty output_text');
     return;
   }
   const xml = extractResponseBlock(rawXml);
   if (!xml) {
-    console.warn('No se encontró el bloque <response> en la salida del agente.');
-    debugLog('Respuesta sin bloque <response>:\n' + rawXml);
+    console.warn('Agent output did not contain a <response> block.');
+    debugLog('Response without <response> block:\n' + rawXml);
     return;
   }
   if (xml !== rawXml) {
-    debugLog('Bloque <response> extraído de una salida con texto adicional.');
+    debugLog('Extracted <response> block from noisy output.');
   }
-  debugLog('XML recibido:\n' + xml);
+  debugLog('XML received:\n' + xml);
 
   const reflection = extractTag(xml, 'internal_reflection');
   const plan = extractTag(xml, 'action_plan');
   const finalResponse = extractTag(xml, 'final_response');
 
   if (!plan) {
-    console.warn('El agente no devolvió <action_plan>. Revisa el log de depuración.');
-    debugLog('Falta <action_plan> en XML');
+    console.warn('Agent output missing <action_plan>. Use --debug to inspect.');
+    debugLog('Missing <action_plan> in XML');
   }
   if (!finalResponse) {
-    console.warn('El agente no devolvió <final_response>.');
-    debugLog('Falta <final_response> en XML');
+    console.warn('Agent output missing <final_response>.');
+    debugLog('Missing <final_response> in XML');
   }
 
   printFinalResponse(finalResponse);
@@ -621,7 +613,7 @@ async function gatherContextForItems(items) {
       .join('\n');
     if (combined) {
       contextMap.set(absolutePath, combined);
-      debugLog('Contexto detectado para', absolutePath, combined);
+      debugLog('Context detected for', absolutePath, combined);
     }
   }
   return contextMap;
@@ -649,7 +641,7 @@ async function loadInfoContext(dir) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
       return '';
     }
-    debugLog('Error leyendo info.json en', dir, error);
+    debugLog('Error reading info.json in', dir, error);
     return '';
   }
 }
@@ -662,7 +654,7 @@ async function readJSONIfExists(filePath) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
       return null;
     }
-    debugLog('No se pudo leer JSON', filePath, error);
+    debugLog('Could not read JSON', filePath, error);
     return null;
   }
 }
@@ -758,16 +750,17 @@ async function safeStat(target) {
 }
 
 function logResult(item, text) {
-  console.log(`\n=== [${item.type.toUpperCase()}] ${item.file} ===`);
-  console.log(text ? text : '[Sin texto detectado]');
+  const label = `media · ${item.type} · ${path.basename(item.file)}`;
+  console.log(`\n${label}`);
+  console.log(text ? text : '[no text detected]');
 }
 
 function printFinalResponse(finalResponse) {
   if (!finalResponse) {
-    console.warn('No se recibió <final_response> del agente.');
+    console.warn('Agent response is missing <final_response>.');
     return;
   }
-  const border = '··· RESUMEN EN VOZ MUSK ···';
+  const border = '—— musk summary ——';
   console.log(`\n${border}`);
   console.log(finalResponse.trim());
   console.log(border);
@@ -801,11 +794,11 @@ function clearScreen() {
 async function showReflectionWindow(reflection, planText, responseText) {
   clearScreen();
   console.log('╔══════════════════════════╗');
-  console.log('║      REFLEXIÓN INTERNA   ║');
+  console.log('║       INTERNAL NOTES      ║');
   console.log('╚══════════════════════════╝');
   console.log(reflection.trim());
   while (true) {
-    const back = (await promptUser('\nPresioná [b] para volver al resumen: ')).toLowerCase();
+    const back = (await promptUser('\npress [b] to go back: ')).toLowerCase();
     if (!back || back === 'b') {
       break;
     }
@@ -841,15 +834,15 @@ async function handleReflectionOutput({
   }
 
   if (!supportsInteractivePrompts()) {
-    console.log(`\nReflexión completa guardada en ${logPath}`);
+    console.log(`\nReflection saved to ${logPath}`);
     return;
   }
 
-  console.log(`\nReflexión completa guardada en ${logPath}.`);
-  const choice = (await promptUser('Tocá [r] para abrirla ahora o Enter para continuar: ')).toLowerCase();
+  console.log(`\nReflection saved to ${logPath}.`);
+  const choice = (await promptUser('press [r] to open it now or Enter to continue: ')).toLowerCase();
   if (choice === 'r') {
     await showReflectionWindow(reflection, planText, responseText);
-    console.log(`\n(Reflexión completa guardada en ${logPath})`);
+    console.log(`\n(reflection saved in ${logPath})`);
   }
 }
 
@@ -902,7 +895,7 @@ function parseArgs(argv) {
     } else if (arg === '--help' || arg === '-h') {
       exitWithUsage(null, 0);
     } else if (arg.startsWith('-')) {
-      exitWithUsage(`Opción desconocida: ${arg}`);
+      exitWithUsage(`Unknown option: ${arg}`);
     } else {
       positional.push(arg);
     }
@@ -933,43 +926,43 @@ function exitWithUsage(message, exitCode = 1) {
     console.error(`\n${message}`);
   }
   console.error(`
-Uso: npm run ocr -- (--path <archivo-o-directorio> | --url <tweet-o-video>) [opciones]
+Usage: npm run ocr -- (--path <file-or-directory> | --url <tweet-or-video>) [options]
 
-Opciones:
-  --path, -p <valor>        Carpeta o archivo local con medios
-  --url, -u <valor>         URL remota (Twitter/X vía gallery-dl, YouTube vía yt-dlp)
-  --prompt <valor>          Prompt personalizado para OCR
-  --output, -o <archivo>    Guarda el JSON en disco
-  --json                    Imprime JSON por stdout
-  --style <nombre>          Aplica un preset (musk, buk, raw, brief, etc.)
-  --style-file <archivo>    Archivo con instrucciones personalizadas
-  --style-text <valor>      Instrucciones inline para el post-procesador
-  --show-reflection         Muestra la reflexión interna en consola
-  --session-log <archivo>   Dónde guardar la respuesta XML (default: current_session.txt)
-  --agent-prompt <archivo>  Reemplaza la plantilla del agente
-  --debug                   Activa logs detallados de depuración
-  --no-recursive            Evita escanear subdirectorios
-  --help, -h                Muestra esta ayuda
+Options:
+  --path, -p <value>        Local media folder or file
+  --url, -u <value>         Remote URL (Twitter/X via gallery-dl, YouTube via yt-dlp)
+  --prompt <value>          Custom OCR prompt for images
+  --output, -o <file>       Save raw JSON to disk
+  --json                    Print JSON to stdout
+  --style <name>            Preset (musk, buk, raw, brief, etc.)
+  --style-file <file>       Custom preset instructions from a file
+  --style-text <value>      Inline custom instructions
+  --show-reflection         Print the internal reflection inline
+  --session-log <file>      Where to store the XML response (default: ${DEFAULT_SESSION_LOG})
+  --agent-prompt <file>     Override the agent prompt template
+  --debug                   Verbose logging
+  --no-recursive            Do not scan subdirectories
+  --help, -h                Show this help
 
-Variables de entorno:
-  OPENAI_API_KEY                 Obligatorio. Tu clave OpenAI (se carga desde .env)
-  OPENAI_OCR_MODEL               Modelo visión (default: ${DEFAULT_VISION_MODEL})
-  OPENAI_OCR_PROMPT              Prompt por defecto para OCR
-  OPENAI_TRANSCRIBE_MODEL        Modelo de transcripción (default: ${DEFAULT_TRANSCRIBE_MODEL})
-  OPENAI_AGENT_MODEL             Modelo del agente (default: ${DEFAULT_AGENT_MODEL})
-  OPENAI_AGENT_MAX_OUTPUT_TOKENS Máx. tokens de salida del agente (default: ${DEFAULT_AGENT_MAX_OUTPUT_TOKENS})
-  OPENAI_OCR_MAX_OUTPUT_TOKENS   Máximo de tokens (default: ${MAX_OUTPUT_TOKENS})
-  OPENAI_OCR_DOWNLOAD_ROOT       Carpeta de descargas (default: ${DOWNLOAD_ROOT})
-  TWX_DEFAULT_STYLE              Estilo por defecto si no se pasa --style
-  TWX_SESSION_LOG                Ruta alternativa para reflexiones completas
-  TWX_NO_SPINNER                 Definilo en 1 para desactivar los spinners
-  TWX_DEBUG                      Definilo en 1 para logs detallados por defecto
+Environment:
+  OPENAI_API_KEY                 Required (loaded from .env)
+  OPENAI_OCR_MODEL               Vision model (default: ${DEFAULT_VISION_MODEL})
+  OPENAI_OCR_PROMPT              Default OCR prompt
+  OPENAI_TRANSCRIBE_MODEL        Transcription model (default: ${DEFAULT_TRANSCRIBE_MODEL})
+  OPENAI_AGENT_MODEL             Agent model (default: ${DEFAULT_AGENT_MODEL})
+  OPENAI_AGENT_MAX_OUTPUT_TOKENS Max agent output tokens (default: ${DEFAULT_AGENT_MAX_OUTPUT_TOKENS})
+  OPENAI_OCR_MAX_OUTPUT_TOKENS   Max tokens for OCR responses (default: ${MAX_OUTPUT_TOKENS})
+  OPENAI_OCR_DOWNLOAD_ROOT       Download directory (default: ${DOWNLOAD_ROOT})
+  TWX_DEFAULT_STYLE              Default preset when --style is omitted
+  TWX_SESSION_LOG                Alternate path for full reflections
+  TWX_NO_SPINNER                 Set to 1 to disable spinners
+  TWX_DEBUG                      Set to 1 for verbose logging by default
 `);
   process.exit(exitCode);
 }
 
 main().catch((error) => {
-  console.error('\nOcurrió un error inesperado durante el procesamiento.');
+  console.error('\nUnexpected error while processing.');
   console.error(error);
   process.exit(1);
 });

@@ -8,8 +8,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT_PATH = path.join(__dirname, '../src/extract-text.js');
 
 function showUsage() {
-  console.error('\nUso: twx <url-o-ruta> [estilo] [opciones]');
-  console.error('Ejemplos:');
+  console.error('\nUsage: twx <url-or-path> [style] [options]');
+  console.error('Examples:');
   console.error('  twx https://x.com/user/status/123456 musk');
   console.error('  twx ./gallery-dl/twitter/thread buk --json');
   process.exit(1);
