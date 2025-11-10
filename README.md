@@ -57,6 +57,10 @@ Todos los planes y respuestas salen en español (tono directo) para que puedas c
 
 El CLI usa spinners de [ora](https://github.com/sindresorhus/ora) para mostrar el progreso mientras descarga, procesa medios o genera el plan con `gpt-5-codex`. Si preferís salida “silenciosa”, exportá `TWX_NO_SPINNER=1` antes de correr `twx`.
 
+### Depuración total
+
+Si necesitás ver absolutamente todo (payloads enviados, respuesta XML, rutas internas), agrega `--debug` al comando o exportá `TWX_DEBUG=1`. En ese modo se imprime cada paso del pipeline y la respuesta cruda del SDK para inspeccionar formatos.
+
 ## Advanced CLI (`npm run ocr`)
 
 You still have access to the detailed flags:
