@@ -549,7 +549,7 @@ async function runInsightAgent({
     sessionLog
   });
 
-  return finalResponse ? [{ role: 'assistant', content: finalResponse.trim() }] : [];
+  return finalResponse ? [{ role: 'assistant', content: sanitizeAssistantText(finalResponse) }] : [];
 }
 
 async function generateAgentResponse({
@@ -667,7 +667,7 @@ function buildAgentPayload({
   );
   blocks.push('Devuelve exclusivamente el bloque <response>…</response>, con todos los tags cerrados y sin texto adicional antes o después.');
   blocks.push(
-    'final_response debe contener entre 3 y 7 párrafos, cada uno de 3 a 5 líneas continuas, sin listas ni encabezados. Debe leerse como Elon Musk explicando la idea en persona: frases cortas, técnicas, enfocadas en impacto y próximos pasos.'
+    'final_response debe contener entre 3 y 5 párrafos, cada uno de 3 a 5 líneas continuas, sin listas ni encabezados. Debe sonar como Elon Musk explicando al usuario qué quiso decir el material, con lenguaje claro y directo. Evitá proponer planes o estrategias; solo interpreta el mensaje y cerrá con una idea clave.'
   );
   blocks.push(
     'Cada bloque de contexto está etiquetado como [MEDIA_CONTEXT]. Son citas textuales del tweet/caption/transcripción y pueden incluir lenguaje explícito; analizalos solo para derivar el significado y nunca los repitas literalmente.'
@@ -935,14 +935,29 @@ function logResult(item, text, context = null) {
   console.log(text ? text : '[no text detected]');
 }
 
+function sanitizeAssistantText(text) {
+  if (!text) {
+    return '';
+  }
+  return stripXmlTags(text).trim();
+}
+
+function stripXmlTags(text) {
+  if (!text) {
+    return '';
+  }
+  return text.replace(/<[^>]+>/g, '');
+}
+
 function printFinalResponse(finalResponse) {
   if (!finalResponse) {
     console.warn('Agent response is missing <final_response>.');
     return;
   }
   const border = '—— musk summary ——';
+  const body = stripXmlTags(finalResponse).trim();
   console.log(`\n${border}`);
-  console.log(finalResponse.trim());
+  console.log(body);
   console.log(border);
 }
 
@@ -1037,17 +1052,24 @@ async function startConversationLoop({ client, results, options, conversationHis
 
     conversationHistory.push({ role: 'user', content: trimmed });
 
-    const responseData = await generateAgentResponse({
-      client,
-      promptSource,
-      results,
-      normalizedStyle,
-      preset,
-      customStyle: trimmed,
-      conversationHistory,
-      spinnerLabel: 'replying…',
-      showSpacer: false
-    });
+    let responseData = null;
+    try {
+      responseData = await generateAgentResponse({
+        client,
+        promptSource,
+        results,
+        normalizedStyle,
+        preset,
+        customStyle: trimmed,
+        conversationHistory,
+        spinnerLabel: 'replying…',
+        showSpacer: false
+      });
+    } catch (error) {
+      console.error('\nagent failed during chat turn. aborting conversation.');
+      debugLog('Chat loop agent error:', error);
+      break;
+    }
 
     if (!responseData || !responseData.finalResponse) {
       console.warn('Agent did not return a reply.');
@@ -1056,7 +1078,7 @@ async function startConversationLoop({ client, results, options, conversationHis
 
     console.log('');
     printFinalResponse(responseData.finalResponse);
-    conversationHistory.push({ role: 'assistant', content: responseData.finalResponse.trim() });
+    conversationHistory.push({ role: 'assistant', content: sanitizeAssistantText(responseData.finalResponse) });
 
     if (responseData.xml) {
       await appendSessionLog(options.sessionLog || DEFAULT_SESSION_LOG, responseData.xml);
