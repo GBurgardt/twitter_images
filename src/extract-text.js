@@ -487,11 +487,20 @@ async function runInsightAgent({
 
   debugLog('Respuesta cruda del agente:', safeStringify(response));
 
-  const xml = response.output_text?.trim() ?? '';
-  if (!xml) {
+  const rawXml = response.output_text?.trim() ?? '';
+  if (!rawXml) {
     console.warn('El agente devolvió una salida vacía.');
     debugLog('Respuesta sin output_text');
     return;
+  }
+  const xml = extractResponseBlock(rawXml);
+  if (!xml) {
+    console.warn('No se encontró el bloque <response> en la salida del agente.');
+    debugLog('Respuesta sin bloque <response>:\n' + rawXml);
+    return;
+  }
+  if (xml !== rawXml) {
+    debugLog('Bloque <response> extraído de una salida con texto adicional.');
   }
   debugLog('XML recibido:\n' + xml);
 
@@ -524,6 +533,7 @@ function buildAgentPayload({ results, styleKey, preset, customStyle }) {
   const blocks = [];
   blocks.push('Idioma obligatorio: español neutro, tono directo y pragmático.');
   blocks.push('Cubrir interpretación y respuesta en una sola narrativa; no insertes encabezados explícitos.');
+  blocks.push('Devuelve exclusivamente el bloque <response>…</response>, con todos los tags cerrados y sin texto adicional antes o después.');
   blocks.push(
     'final_response debe contener entre 3 y 7 párrafos, cada uno de 3 a 5 líneas continuas, sin listas ni encabezados. Debe leerse como Elon Musk explicando la idea en persona: frases cortas, técnicas, enfocadas en impacto y próximos pasos.'
   );
@@ -565,6 +575,19 @@ function safeStringify(value) {
   } catch (error) {
     return `[No se pudo serializar: ${error instanceof Error ? error.message : error}]`;
   }
+}
+
+function extractResponseBlock(text) {
+  if (!text) {
+    return '';
+  }
+  const start = text.indexOf('<response');
+  const end = text.lastIndexOf('</response>');
+  if (start === -1 || end === -1) {
+    return '';
+  }
+  const closing = '</response>'.length;
+  return text.slice(start, end + closing).trim();
 }
 
 async function gatherContextForItems(items) {
