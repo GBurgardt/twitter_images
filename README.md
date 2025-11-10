@@ -57,6 +57,10 @@ Todos los planes y respuestas salen en español (tono directo) para que puedas c
 
 El CLI usa spinners de [ora](https://github.com/sindresorhus/ora) para mostrar el progreso mientras descarga, procesa medios o genera el plan con `gpt-5-codex`. Si preferís salida “silenciosa”, exportá `TWX_NO_SPINNER=1` antes de correr `twx`.
 
+### Reflexión interactiva
+
+Al terminar, si hay reflexión interna oculta verás el mensaje `Presioná [r] para leerla ahora`. Ese atajo limpia la pantalla, muestra la reflexión completa y te deja volver al resumen con `[b]`. Si no querés interactuar, simplemente tocá Enter y quedará guardada en `current_session.txt`.
+
 ### Depuración total
 
 Si necesitás ver absolutamente todo (payloads enviados, respuesta XML, rutas internas), agrega `--debug` al comando o exportá `TWX_DEBUG=1`. En ese modo se imprime cada paso del pipeline y la respuesta cruda del SDK para inspeccionar formatos.
@@ -88,8 +92,8 @@ Behind the scenes:
 4. Text files (e.g., tweet captions saved by `gallery-dl`) are read directly.
 5. Results feed into the post-processor defined in `prompts/agent_prompt.txt`, powered by `gpt-5-codex` with high reasoning effort, which always outputs:
    - `<internal_reflection>` long-form reasoning (hidden unless requested)
-   - `<action_plan>` prioritized steps
-   - `<final_response>` the short answer in the requested tone
+   - `<action_plan>` la interpretación/principales ideas
+   - `<final_response>` la explicación breve en el tono solicitado
 
 ## Tips
 
@@ -98,4 +102,4 @@ Behind the scenes:
 - Store frequently used briefs in `prompts/*.txt` and reference them with `--style-file`.
 - `current_session.txt` accumulates every XML response; clear it when you need a fresh log.
 
-The entire experience is optimized for a two-word command: paste the URL, add a short preset tag, and let the tool do the rest. The raw text, transcriptions, plan, and final response are all ready in one run.
+The entire experience is optimized for a two-word command: paste the URL, add a short preset tag, and let the tool do the rest. The raw text, transcriptions, interpretación y respuesta final quedan listas en una sola corrida.

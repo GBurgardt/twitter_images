@@ -6,6 +6,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import readline from 'node:readline/promises';
 import OpenAI from 'openai';
 import ora from 'ora';
 
@@ -482,34 +483,31 @@ async function runInsightAgent({
   const plan = extractTag(xml, 'action_plan');
   const finalResponse = extractTag(xml, 'final_response');
 
-  if (plan) {
-    console.log('\n--- PLAN DE ACCIÓN ---');
-    console.log(plan.trim());
-  } else {
+  if (!plan) {
     console.warn('El agente no devolvió <action_plan>. Revisa el log de depuración.');
     debugLog('Falta <action_plan> en XML');
   }
-  if (finalResponse) {
-    console.log('\n--- RESPUESTA ---');
-    console.log(finalResponse.trim());
-  } else {
+  if (!finalResponse) {
     console.warn('El agente no devolvió <final_response>.');
     debugLog('Falta <final_response> en XML');
   }
 
-  if (showReflection && reflection) {
-    console.log('\n--- REFLEXIÓN INTERNA ---');
-    console.log(reflection.trim());
-  } else if (reflection) {
-    await appendSessionLog(sessionLog || DEFAULT_SESSION_LOG, xml);
-    console.log(`\nReflexión completa guardada en ${sessionLog || DEFAULT_SESSION_LOG}`);
-  }
+  printInterpretationAndResponse(plan, finalResponse);
+
+  await handleReflectionOutput({
+    reflection,
+    xml,
+    planText: plan?.trim() ?? '',
+    responseText: finalResponse?.trim() ?? '',
+    showReflection,
+    sessionLog
+  });
 }
 
 function buildAgentPayload({ results, styleKey, preset, customStyle }) {
   const blocks = [];
   blocks.push('Idioma obligatorio: español neutro, tono directo y pragmático.');
-  blocks.push('Encabezados esperados: PLAN DE ACCIÓN + RESPUESTA.');
+  blocks.push('Encabezados esperados: INTERPRETACIÓN PRAGMÁTICA + RESPUESTA.');
   blocks.push(`Style preset: ${styleKey || 'none'}`);
   if (preset) {
     blocks.push(`Preset instructions:\n${preset}`);
@@ -586,6 +584,94 @@ async function safeStat(target) {
 function logResult(item, text) {
   console.log(`\n=== [${item.type.toUpperCase()}] ${item.file} ===`);
   console.log(text ? text : '[Sin texto detectado]');
+}
+
+function printInterpretationAndResponse(plan, finalResponse) {
+  if (plan) {
+    console.log('\n--- INTERPRETACIÓN PRAGMÁTICA ---');
+    console.log(plan.trim());
+  }
+  if (finalResponse) {
+    console.log('\n--- RESPUESTA ---');
+    console.log(finalResponse.trim());
+  }
+}
+
+function supportsInteractivePrompts() {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+async function promptUser(message) {
+  if (!supportsInteractivePrompts()) {
+    return '';
+  }
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await rl.question(message);
+  rl.close();
+  return answer.trim();
+}
+
+function clearScreen() {
+  if (!supportsInteractivePrompts()) {
+    return;
+  }
+  if (typeof console.clear === 'function') {
+    console.clear();
+  } else {
+    process.stdout.write('\x1Bc');
+  }
+}
+
+async function showReflectionWindow(reflection, planText, responseText) {
+  clearScreen();
+  console.log('╔════════ REFLEXIÓN INTERNA ════════╗');
+  console.log(reflection.trim());
+  console.log('╚══════════════════════════════════╝');
+  while (true) {
+    const back = (await promptUser('\nPresioná [b] para volver al resumen: ')).toLowerCase();
+    if (!back || back === 'b') {
+      break;
+    }
+  }
+  clearScreen();
+  printInterpretationAndResponse(planText, responseText);
+}
+
+async function handleReflectionOutput({
+  reflection,
+  xml,
+  planText,
+  responseText,
+  showReflection,
+  sessionLog
+}) {
+  if (!reflection) {
+    if (xml) {
+      await appendSessionLog(sessionLog || DEFAULT_SESSION_LOG, xml);
+    }
+    return;
+  }
+
+  const logPath = sessionLog || DEFAULT_SESSION_LOG;
+  await appendSessionLog(logPath, xml);
+
+  if (showReflection) {
+    console.log('\n--- REFLEXIÓN INTERNA ---');
+    console.log(reflection.trim());
+    return;
+  }
+
+  if (!supportsInteractivePrompts()) {
+    console.log(`\nReflexión completa guardada en ${logPath}`);
+    return;
+  }
+
+  console.log(`\nReflexión completa guardada en ${logPath}.`);
+  const choice = (await promptUser('Presioná [r] para leerla ahora o Enter para seguir: ')).toLowerCase();
+  if (choice === 'r') {
+    await showReflectionWindow(reflection, planText, responseText);
+    console.log(`\n(Reflexión completa guardada en ${logPath})`);
+  }
 }
 
 function parseArgs(argv) {
