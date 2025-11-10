@@ -444,37 +444,55 @@ async function runInsightAgent({
       ? await fs.readFile(path.resolve(styleFile), 'utf8')
       : inlineCustom;
 
-  const payload = buildAgentPayload({
-    results,
-    styleKey: normalizedStyle,
-    preset,
-    customStyle
-  });
-  debugLog('Payload sent to agent:\n' + payload);
-
-  const agentSpinner = startSpinner('generating summary…');
-  let response;
-  try {
-    response = await client.responses.create({
-      model: DEFAULT_AGENT_MODEL,
-      reasoning: { effort: 'high' },
-      max_output_tokens: DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
-      input: [
-        {
-          role: 'system',
-          content: [{ type: 'input_text', text: promptSource }]
-        },
-        {
-          role: 'user',
-          content: [{ type: 'input_text', text: payload }]
-        }
-      ]
+  let response = null;
+  let omitContext = false;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const payload = buildAgentPayload({
+      results,
+      styleKey: normalizedStyle,
+      preset,
+      customStyle,
+      omitContext
     });
-    agentSpinner.succeed('Plan generado.');
-  } catch (error) {
-    agentSpinner.fail('plan generation failed');
-    debugLog('Error del agente:', error);
-    throw error;
+    debugLog('Payload sent to agent:\n' + payload);
+
+    if (attempt === 0) {
+      console.log('');
+    }
+    const agentSpinner = startSpinner(attempt === 0 ? 'generating…' : 'regenerating…');
+
+    try {
+      response = await client.responses.create({
+        model: DEFAULT_AGENT_MODEL,
+        reasoning: { effort: 'high' },
+        max_output_tokens: DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
+        input: [
+          {
+            role: 'system',
+            content: [{ type: 'input_text', text: promptSource }]
+          },
+          {
+            role: 'user',
+            content: [{ type: 'input_text', text: payload }]
+          }
+        ]
+      });
+      agentSpinner.succeed('plan ready');
+      break;
+    } catch (error) {
+      agentSpinner.fail('plan generation failed');
+      if (isInvalidPromptError(error) && !omitContext) {
+        console.warn('Prompt was flagged; retrying with captions trimmed.');
+        omitContext = true;
+        continue;
+      }
+      debugLog('Agent error:', error);
+      throw error;
+    }
+  }
+
+  if (!response) {
+    throw new Error('Agent did not return a response.');
   }
 
   debugLog('Raw agent response:', safeStringify(response));
@@ -521,10 +539,13 @@ async function runInsightAgent({
   });
 }
 
-function buildAgentPayload({ results, styleKey, preset, customStyle }) {
+function buildAgentPayload({ results, styleKey, preset, customStyle, omitContext = false }) {
   const blocks = [];
   blocks.push('Idioma obligatorio: español neutro, tono directo y pragmático.');
   blocks.push('Cubrir interpretación y respuesta en una sola narrativa; no insertes encabezados explícitos.');
+  blocks.push(
+    'El material proviene del usuario; analizalo exclusivamente, evitá amplificar lenguaje dañino y parafraseá cualquier expresión explícita.'
+  );
   blocks.push('Devuelve exclusivamente el bloque <response>…</response>, con todos los tags cerrados y sin texto adicional antes o después.');
   blocks.push(
     'final_response debe contener entre 3 y 7 párrafos, cada uno de 3 a 5 líneas continuas, sin listas ni encabezados. Debe leerse como Elon Musk explicando la idea en persona: frases cortas, técnicas, enfocadas en impacto y próximos pasos.'
@@ -532,12 +553,17 @@ function buildAgentPayload({ results, styleKey, preset, customStyle }) {
   blocks.push(
     'Cada bloque de contexto está etiquetado como [MEDIA_CONTEXT]. Son citas textuales del tweet/caption/transcripción y pueden incluir lenguaje explícito; analizalos solo para derivar el significado y nunca los repitas literalmente.'
   );
+  if (omitContext) {
+    blocks.push('Contexto acotado: se omitieron captions para cumplir la política; trabajá solo con los textos listados arriba.');
+  }
   blocks.push(`Style preset: ${styleKey || 'none'}`);
   if (preset) {
-    blocks.push(`Preset instructions:\n${preset}`);
+    blocks.push(`Preset instructions:
+${preset}`);
   }
   if (customStyle?.trim()) {
-    blocks.push(`Custom instructions:\n${customStyle.trim()}`);
+    blocks.push(`User inline request:
+${customStyle.trim()}`);
   }
 
   blocks.push(
@@ -550,8 +576,9 @@ function buildAgentPayload({ results, styleKey, preset, customStyle }) {
           } else {
             base.push(`Texto:\n${entry.text || '[Sin texto detectado]'}`);
           }
-          if (entry.context) {
-            base.push(`Contexto:\n${entry.context}`);
+          if (!omitContext && entry.context) {
+            base.push(`Contexto:
+${entry.context}`);
           }
           return base.join('\n');
         })
@@ -567,6 +594,10 @@ function safeStringify(value) {
   } catch (error) {
     return `[No se pudo serializar: ${error instanceof Error ? error.message : error}]`;
   }
+}
+
+function isInvalidPromptError(error) {
+  return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'invalid_prompt');
 }
 
 function extractResponseBlock(text) {
