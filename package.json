@@ -4,8 +4,12 @@
   "description": "",
   "type": "module",
   "main": "index.js",
+  "bin": {
+    "twx": "./bin/twx.js"
+  },
   "scripts": {
-    "ocr": "node src/extract-text.js"
+    "ocr": "node src/extract-text.js",
+    "twx": "node bin/twx.js"
   },
   "keywords": [],
   "author": "",

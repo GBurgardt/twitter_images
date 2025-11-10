@@ -1,47 +1,93 @@
-# Twitter OCR Pipeline
+# Twitter / X Media Insight CLI
 
-CLI helper to turn media downloaded with `gallery-dl` into plain text using OpenAI's multimodal model `gpt-4.5-nano`.
+Turn any tweet (images, videos, text) or YouTube clip into usable text and an action plan in one shot. The tool auto-detects the media type, runs OCR or Whisper, and optionally feeds the result through a post-processor that speaks in your favorite tone (Musk by default, Bukowski, raw transcript, etc.).
 
-## Setup
+## Requirements
 
-1. Install dependencies
-   ```bash
-   npm install
-   ```
-2. Create a `.env` file alongside `package.json` with your key:
-   ```bash
-   echo "OPENAI_API_KEY=sk-..." >> .env
-   ```
-   Optional overrides:
-   - `OPENAI_OCR_MODEL` to swap the modelo multimodal (por defecto `gpt-4.1-mini`, que acepta imágenes)
-   - `OPENAI_OCR_PROMPT` to customise the extraction instructions
-   - `OPENAI_OCR_MAX_OUTPUT_TOKENS` to cap response length
-   - `OPENAI_OCR_DOWNLOAD_ROOT` to choose where temporary tweet downloads live (defaults to `./gallery-dl-runs`)
+1. Node.js 18+
+2. OpenAI API key (`.env` with `OPENAI_API_KEY=sk-...`)
+3. [gallery-dl](https://github.com/mikf/gallery-dl) on your `PATH` (tweet/thread downloads)
+4. [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org/) on your `PATH` (YouTube audio extraction)
 
-Ensure [`gallery-dl`](https://github.com/mikf/gallery-dl) is installed and on your `PATH` if you want the tool to fetch tweets automatically.
-
-## Usage
-
-Run the extractor against an image file or a directory produced by `gallery-dl`:
+Install JS deps and set up your key:
 
 ```bash
-npm run ocr -- --path ./gallery-dl/twitter/FlamebearerEno
+npm install
+echo "OPENAI_API_KEY=sk-..." >> .env
 ```
 
-Or let it download the tweet for you (images only):
+## Quick start: the `twx` command
+
+Link/install the CLI globally so `twx` is available everywhere:
 
 ```bash
-npm run ocr -- --url https://x.com/FlamebearerEno/status/1981520427215442067
+npm link   # or: npm install -g .
 ```
 
-Useful flags:
-- `--output ocr.json` saves the structured result to disk
-- `--json` prints the same JSON to stdout
-- `--no-recursive` disables subdirectory scanning
-- `--prompt "Extract text and translate to English"` overrides the prompt per run
+Usage:
 
-Each image is sent individually to OpenAI Vision, encoded as `data:` URLs, and the model returns raw text with spacing preserved.
+```bash
+twx <url-or-path> [style] [extra options]
+```
 
-Downloads triggered via `--url` land in `./gallery-dl-runs/run-*/` so you can re-check the media later. The script ignores non-image files and reports an error if nothing suitable is found.
+Examples:
 
-> The script currently targets image files. If `gallery-dl` only produced videos for a tweet, you will need to extract still frames separately before running OCR.
+- `twx https://x.com/user/status/12345` → downloads the tweet, extracts all text, and returns a Musk-style plan + summary.
+- `twx https://youtu.be/clip buk` → pulls the YouTube audio via `yt-dlp`, transcribes with Whisper, and replies like Bukowski.
+- `twx ./gallery-dl/twitter/thread raw` → reuse an existing folder and just dump the raw transcript.
+
+`style` is optional and defaults to `musk`. Aliases you can use as the second word:
+
+| Style | Aliases            | What it does |
+|-------|--------------------|--------------|
+| `musk` (default) | `m`, `mx`, `max`, `elon` | Direct, technical, action-first |
+| `bukowski` | `buk`, `bk` | Gritty, blunt recap |
+| `brief` | `brief`, `sum` | Three sharp executive bullets |
+| `raw` | `raw`, `plain`, `txt` | Returns the combined transcript verbatim |
+
+Need a custom voice? Create a text file with your instruction (e.g., `brief.txt`) and run:
+
+```bash
+twx https://x.com/... musk --style-file brief.txt
+```
+
+The full internal reflection is saved to `current_session.txt` so you can inspect the long-form reasoning later. Add `--show-reflection` if you want it printed to stdout immediately.
+
+## Advanced CLI (`npm run ocr`)
+
+You still have access to the detailed flags:
+
+```bash
+npm run ocr -- --url https://x.com/... --style buk --output result.json
+```
+
+Options:
+
+- `--path ./folder` — use local media (images, videos, text snippets)
+- `--url https://x.com/...` — fetch via `gallery-dl`
+- `--url https://youtu.be/...` — fetch via `yt-dlp`
+- `--prompt "..."` — custom OCR instructions for images
+- `--style <preset>` / `--style-file file.txt` / `--style-text "inline"` — control the post-processor
+- `--json`, `--output file.json` — machine-readable output of every file
+- `--session-log custom.txt` — redirect the XML reflections
+- `--agent-prompt prompts/agent_prompt.txt` — swap the high-level prompt template
+
+Behind the scenes:
+
+1. Files are downloaded to `gallery-dl-runs/run-*` (or `yt-*` for YouTube).
+2. Images go through the multimodal model (`OPENAI_OCR_MODEL`, default `gpt-4.1-mini`).
+3. Videos and audio go through Whisper (`OPENAI_TRANSCRIBE_MODEL`, default `whisper-1`).
+4. Text files (e.g., tweet captions saved by `gallery-dl`) are read directly.
+5. Results feed into the post-processor defined in `prompts/agent_prompt.txt`, which always outputs:
+   - `<internal_reflection>` long-form reasoning (hidden unless requested)
+   - `<action_plan>` prioritized steps
+   - `<final_response>` the short answer in the requested tone
+
+## Tips
+
+- Set `TWX_DEFAULT_STYLE` in your shell to change the default preset for both `twx` and `npm run ocr`.
+- Use `--style raw` when you only want transcripts/OCR without any summarization.
+- Store frequently used briefs in `prompts/*.txt` and reference them with `--style-file`.
+- `current_session.txt` accumulates every XML response; clear it when you need a fresh log.
+
+The entire experience is optimized for a two-word command: paste the URL, add a short preset tag, and let the tool do the rest. The raw text, transcriptions, plan, and final response are all ready in one run.
