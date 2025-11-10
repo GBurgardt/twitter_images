@@ -7,6 +7,7 @@ import process from 'node:process';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import OpenAI from 'openai';
+import ora from 'ora';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -14,13 +15,14 @@ const AGENT_PROMPT_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt.txt');
 const DEFAULT_SESSION_LOG = path.join(PROJECT_ROOT, 'current_session.txt');
 
 const DEFAULT_IMAGE_PROMPT =
-  'Extract every piece of legible text from this image. Preserve line breaks and spacing when obvious, and return only the raw text.';
+  'Extraé todo el texto legible de esta imagen. Conservá saltos de línea y espaciados evidentes y devolvé sólo el texto crudo.';
 const DEFAULT_VISION_MODEL = process.env.OPENAI_OCR_MODEL || 'gpt-4.1-mini';
 const MAX_OUTPUT_TOKENS = Number(process.env.OPENAI_OCR_MAX_OUTPUT_TOKENS ?? 800);
 const DEFAULT_TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'whisper-1';
 const DEFAULT_AGENT_MODEL = process.env.OPENAI_AGENT_MODEL || 'gpt-5-codex';
 const DOWNLOAD_ROOT =
   process.env.OPENAI_OCR_DOWNLOAD_ROOT || path.join(process.cwd(), 'gallery-dl-runs');
+const SPINNER_ENABLED = process.stdout.isTTY && process.env.TWX_NO_SPINNER !== '1';
 
 const IMAGE_MIME_TYPES = {
   '.apng': 'image/apng',
@@ -41,11 +43,11 @@ const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.rtf']);
 
 const STYLE_PRESETS = {
   musk:
-    'Summarize the material in Elon Musk’s voice: terse, technical, focused on next steps and leverage. Use short sentences and highlight bold bets.',
+    'Resumí en español con la voz de Elon Musk: frases cortas, tono técnico y enfoque en próximos pasos y apuestas audaces.',
   bukowski:
-    'Summarize like Charles Bukowski: raw, direct, a bit gritty but still actionable. Keep it streetwise and brutally honest.',
-  raw: 'Return the combined transcript verbatim, with zero additional commentary.',
-  brief: 'Deliver a 3-bullet executive brief with the sharpest insights only.'
+    'Resumí en español como Charles Bukowski: crudo, directo, sin adornos pero con acciones claras.',
+  raw: 'Devuelve el texto original sin resumir ni comentar.',
+  brief: 'Armá un brief ejecutivo en tres viñetas con las ideas más filosas, siempre en español.'
 };
 
 const STYLE_ALIASES = {
@@ -66,16 +68,34 @@ const STYLE_ALIASES = {
 
 const TWITTER_HOSTS = new Set(['twitter.com', 'www.twitter.com', 'x.com', 'www.x.com', 'mobile.twitter.com']);
 const YOUTUBE_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be']);
+const SPINNER_STUB = {
+  set text(value) {
+    this._text = value;
+  },
+  succeed() {},
+  fail() {},
+  stop() {},
+  info() {}
+};
+
+function startSpinner(text) {
+  if (!SPINNER_ENABLED) {
+    const stub = Object.create(SPINNER_STUB);
+    stub._text = text;
+    return stub;
+  }
+  return ora({ text, color: 'cyan' }).start();
+}
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (!options.inputPath && !options.url) {
-    exitWithUsage('Provide either --path or --url.');
+    exitWithUsage('Indicá --path o --url.');
   }
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    exitWithUsage('Missing OPENAI_API_KEY in environment (e.g. .env file).');
+    exitWithUsage('Falta OPENAI_API_KEY en el entorno (ej: archivo .env).');
   }
 
   const client = new OpenAI({ apiKey });
@@ -85,7 +105,7 @@ async function main() {
   if (options.inputPath) {
     const stats = await safeStat(options.inputPath);
     if (!stats) {
-      exitWithUsage(`Input path not found: ${options.inputPath}`);
+      exitWithUsage(`Ruta de entrada no encontrada: ${options.inputPath}`);
     }
 
     if (stats.isDirectory()) {
@@ -94,7 +114,7 @@ async function main() {
     } else {
       const type = getMediaType(options.inputPath);
       if (!type) {
-        exitWithUsage(`Unsupported file type: ${options.inputPath}`);
+        exitWithUsage(`Tipo de archivo no soportado: ${options.inputPath}`);
       }
       mediaItems.push({ path: options.inputPath, type });
     }
@@ -103,15 +123,15 @@ async function main() {
   if (options.url) {
     const download = await downloadRemoteMedia(options.url);
     if (!download.items.length) {
-      exitWithUsage(`No supported media downloaded from URL: ${options.url}`);
+      exitWithUsage(`No se descargaron medios compatibles desde: ${options.url}`);
     }
     mediaItems.push(...download.items);
     const relativeBase = path.relative(process.cwd(), download.baseDir) || download.baseDir;
-    infoMessages.push(`Downloaded media to ${relativeBase}`);
+    infoMessages.push(`Medios descargados en ${relativeBase}`);
   }
 
   if (!mediaItems.length) {
-    exitWithUsage('No supported media available.');
+    exitWithUsage('No hay medios compatibles para procesar.');
   }
 
   const results = [];
@@ -119,6 +139,7 @@ async function main() {
   for (const item of mediaItems) {
     const absolutePath = path.resolve(item.path);
     const relativePath = path.relative(process.cwd(), absolutePath) || absolutePath;
+    const spinner = startSpinner(`Procesando ${item.type} → ${path.basename(relativePath)}`);
     try {
       let text = '';
       if (item.type === 'image') {
@@ -135,16 +156,18 @@ async function main() {
       } else if (item.type === 'text') {
         text = await readPlainText(absolutePath);
       } else {
-        throw new Error(`Unsupported media type for ${relativePath}`);
+        throw new Error(`Tipo de medio no soportado: ${relativePath}`);
       }
 
       results.push({ file: relativePath, type: item.type, text });
+      spinner.succeed(`Listo ${path.basename(relativePath)}`);
       if (!options.json) {
         logResult({ file: relativePath, type: item.type }, text);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       results.push({ file: relativePath, type: item.type, error: message });
+      spinner.fail(`Error en ${path.basename(relativePath)}`);
       if (!options.json) {
         console.error(`\n[ERROR] ${relativePath}`);
         console.error(`        ${message}`);
@@ -165,7 +188,7 @@ async function main() {
     if (options.outputFile) {
       await fs.writeFile(options.outputFile, payload, 'utf8');
       if (!options.json) {
-        console.log(`\nSaved output to ${options.outputFile}`);
+        console.log(`\nResultados guardados en ${options.outputFile}`);
       }
     }
     if (options.json) {
@@ -189,7 +212,7 @@ async function main() {
       .map((entry) => `### ${entry.file}\n${entry.text}`)
       .join('\n\n');
     if (combined) {
-      console.log('\n--- RAW TRANSCRIPTS (no GPT processing) ---');
+      console.log('\n--- TRANSCRIPCIONES SIN PROCESAR (sin GPT) ---');
       console.log(combined);
     }
   }
@@ -218,7 +241,7 @@ async function extractTextFromImage({ client, filePath, prompt }) {
   const extension = path.extname(filePath).toLowerCase();
   const mimeType = IMAGE_MIME_TYPES[extension];
   if (!mimeType) {
-    throw new Error(`Unsupported image type for ${filePath}`);
+    throw new Error(`Tipo de imagen no soportado: ${filePath}`);
   }
 
   const buffer = await fs.readFile(filePath);
@@ -306,7 +329,7 @@ async function runExternalCommand(command, args) {
     const child = spawn(command, args, { stdio: 'inherit' });
     child.on('error', (error) => {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
-        reject(new Error(`${command} command not found. Install it and ensure it is on your PATH.`));
+        reject(new Error(`Comando ${command} no encontrado. Instalalo y sumalo al PATH.`));
         return;
       }
       reject(error);
@@ -315,7 +338,7 @@ async function runExternalCommand(command, args) {
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(`${command} exited with status ${code}`));
+        reject(new Error(`${command} terminó con estado ${code}`));
       }
     });
   });
@@ -387,24 +410,32 @@ async function runInsightAgent({
     customStyle
   });
 
-  const response = await client.responses.create({
-    model: DEFAULT_AGENT_MODEL,
-    reasoning: { effort: 'high' },
-    input: [
-      {
-        role: 'system',
-        content: [{ type: 'input_text', text: promptSource }]
-      },
-      {
-        role: 'user',
-        content: [{ type: 'input_text', text: payload }]
-      }
-    ]
-  });
+  const agentSpinner = startSpinner('Generando plan y respuesta…');
+  let response;
+  try {
+    response = await client.responses.create({
+      model: DEFAULT_AGENT_MODEL,
+      reasoning: { effort: 'high' },
+      input: [
+        {
+          role: 'system',
+          content: [{ type: 'input_text', text: promptSource }]
+        },
+        {
+          role: 'user',
+          content: [{ type: 'input_text', text: payload }]
+        }
+      ]
+    });
+    agentSpinner.succeed('Plan generado.');
+  } catch (error) {
+    agentSpinner.fail('Falló la generación del plan.');
+    throw error;
+  }
 
   const xml = response.output_text?.trim() ?? '';
   if (!xml) {
-    console.warn('Agent returned empty output.');
+    console.warn('El agente devolvió una salida vacía.');
     return;
   }
 
@@ -413,25 +444,27 @@ async function runInsightAgent({
   const finalResponse = extractTag(xml, 'final_response');
 
   if (plan) {
-    console.log('\n--- PLAN ---');
+    console.log('\n--- PLAN DE ACCIÓN ---');
     console.log(plan.trim());
   }
   if (finalResponse) {
-    console.log('\n--- RESPONSE ---');
+    console.log('\n--- RESPUESTA ---');
     console.log(finalResponse.trim());
   }
 
   if (showReflection && reflection) {
-    console.log('\n--- INTERNAL REFLECTION ---');
+    console.log('\n--- REFLEXIÓN INTERNA ---');
     console.log(reflection.trim());
   } else if (reflection) {
     await appendSessionLog(sessionLog || DEFAULT_SESSION_LOG, xml);
-    console.log(`\nFull reflection saved to ${sessionLog || DEFAULT_SESSION_LOG}`);
+    console.log(`\nReflexión completa guardada en ${sessionLog || DEFAULT_SESSION_LOG}`);
   }
 }
 
 function buildAgentPayload({ results, styleKey, preset, customStyle }) {
   const blocks = [];
+  blocks.push('Idioma obligatorio: español neutro, tono directo y pragmático.');
+  blocks.push('Encabezados esperados: PLAN DE ACCIÓN + RESPUESTA.');
   blocks.push(`Style preset: ${styleKey || 'none'}`);
   if (preset) {
     blocks.push(`Preset instructions:\n${preset}`);
@@ -441,14 +474,14 @@ function buildAgentPayload({ results, styleKey, preset, customStyle }) {
   }
 
   blocks.push(
-    'Media items:\n' +
+    'Materiales analizados:\n' +
       results
         .map((entry, index) => {
-          const base = [`Item ${index + 1}`, `File: ${entry.file}`, `Type: ${entry.type}`];
+          const base = [`Item ${index + 1}`, `Archivo: ${entry.file}`, `Tipo: ${entry.type}`];
           if (entry.error) {
             base.push(`Error: ${entry.error}`);
           } else {
-            base.push(`Text:\n${entry.text || '[No text detected]'}`);
+            base.push(`Texto:\n${entry.text || '[Sin texto detectado]'}`);
           }
           return base.join('\n');
         })
@@ -499,7 +532,7 @@ async function safeStat(target) {
 
 function logResult(item, text) {
   console.log(`\n=== [${item.type.toUpperCase()}] ${item.file} ===`);
-  console.log(text ? text : '[No text detected]');
+  console.log(text ? text : '[Sin texto detectado]');
 }
 
 function parseArgs(argv) {
@@ -548,7 +581,7 @@ function parseArgs(argv) {
     } else if (arg === '--help' || arg === '-h') {
       exitWithUsage(null, 0);
     } else if (arg.startsWith('-')) {
-      exitWithUsage(`Unknown option: ${arg}`);
+      exitWithUsage(`Opción desconocida: ${arg}`);
     } else {
       positional.push(arg);
     }
@@ -579,39 +612,40 @@ function exitWithUsage(message, exitCode = 1) {
     console.error(`\n${message}`);
   }
   console.error(`
-Usage: npm run ocr -- (--path <file-or-directory> | --url <tweet-or-video-url>) [options]
+Uso: npm run ocr -- (--path <archivo-o-directorio> | --url <tweet-o-video>) [opciones]
 
-Options:
-  --path, -p <value>        File or directory with media
-  --url, -u <value>         Remote URL to download (Twitter/X via gallery-dl, YouTube via yt-dlp)
-  --prompt <value>          Custom OCR prompt for images
-  --output, -o <file>       Save results as JSON to a file
-  --json                    Print JSON to stdout
-  --style <name>            Apply a preset post-processor (e.g. musk, buk, raw, brief)
-  --style-file <file>       Provide custom instructions for the post-processor
-  --style-text <value>      Inline custom instructions for the post-processor
-  --show-reflection         Print the internal reflection block instead of hiding it
-  --session-log <file>      Where to store the full XML response (default: current_session.txt)
-  --agent-prompt <file>     Override the default agent prompt template
-  --no-recursive            Do not look into subdirectories
-  --help, -h                Show this help message
+Opciones:
+  --path, -p <valor>        Carpeta o archivo local con medios
+  --url, -u <valor>         URL remota (Twitter/X vía gallery-dl, YouTube vía yt-dlp)
+  --prompt <valor>          Prompt personalizado para OCR
+  --output, -o <archivo>    Guarda el JSON en disco
+  --json                    Imprime JSON por stdout
+  --style <nombre>          Aplica un preset (musk, buk, raw, brief, etc.)
+  --style-file <archivo>    Archivo con instrucciones personalizadas
+  --style-text <valor>      Instrucciones inline para el post-procesador
+  --show-reflection         Muestra la reflexión interna en consola
+  --session-log <archivo>   Dónde guardar la respuesta XML (default: current_session.txt)
+  --agent-prompt <archivo>  Reemplaza la plantilla del agente
+  --no-recursive            Evita escanear subdirectorios
+  --help, -h                Muestra esta ayuda
 
-Environment:
-  OPENAI_API_KEY                 Required. Your OpenAI API key (loaded from .env if present)
-  OPENAI_OCR_MODEL               Override default vision model (default: ${DEFAULT_VISION_MODEL})
-  OPENAI_OCR_PROMPT              Override default extraction prompt
-  OPENAI_TRANSCRIBE_MODEL        Override default transcription model (default: ${DEFAULT_TRANSCRIBE_MODEL})
-  OPENAI_AGENT_MODEL             Override default agent model (default: ${DEFAULT_AGENT_MODEL})
-  OPENAI_OCR_MAX_OUTPUT_TOKENS   Adjust max tokens (default: ${MAX_OUTPUT_TOKENS})
-  OPENAI_OCR_DOWNLOAD_ROOT       Override media download directory (default: ${DOWNLOAD_ROOT})
-  TWX_DEFAULT_STYLE              Default style preset when --style is omitted
-  TWX_SESSION_LOG                Alternate path for saving full reflections
+Variables de entorno:
+  OPENAI_API_KEY                 Obligatorio. Tu clave OpenAI (se carga desde .env)
+  OPENAI_OCR_MODEL               Modelo visión (default: ${DEFAULT_VISION_MODEL})
+  OPENAI_OCR_PROMPT              Prompt por defecto para OCR
+  OPENAI_TRANSCRIBE_MODEL        Modelo de transcripción (default: ${DEFAULT_TRANSCRIBE_MODEL})
+  OPENAI_AGENT_MODEL             Modelo del agente (default: ${DEFAULT_AGENT_MODEL})
+  OPENAI_OCR_MAX_OUTPUT_TOKENS   Máximo de tokens (default: ${MAX_OUTPUT_TOKENS})
+  OPENAI_OCR_DOWNLOAD_ROOT       Carpeta de descargas (default: ${DOWNLOAD_ROOT})
+  TWX_DEFAULT_STYLE              Estilo por defecto si no se pasa --style
+  TWX_SESSION_LOG                Ruta alternativa para reflexiones completas
+  TWX_NO_SPINNER                 Definilo en 1 para desactivar los spinners
 `);
   process.exit(exitCode);
 }
 
 main().catch((error) => {
-  console.error('\nUnexpected error during processing.');
+  console.error('\nOcurrió un error inesperado durante el procesamiento.');
   console.error(error);
   process.exit(1);
 });

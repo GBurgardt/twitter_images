@@ -51,7 +51,11 @@ Need a custom voice? Create a text file with your instruction (e.g., `brief.txt`
 twx https://x.com/... musk --style-file brief.txt
 ```
 
-The full internal reflection is saved to `current_session.txt` so you can inspect the long-form reasoning later. Add `--show-reflection` if you want it printed to stdout immediately.
+Todos los planes y respuestas salen en español (tono directo) para que puedas copiar y pegar sin traducir. La reflexión interna completa se guarda en `current_session.txt`; agregá `--show-reflection` si querés verla en pantalla al instante.
+
+### Feedback visual
+
+El CLI usa spinners de [ora](https://github.com/sindresorhus/ora) para mostrar el progreso mientras descarga, procesa medios o genera el plan con `gpt-5-codex`. Si preferís salida “silenciosa”, exportá `TWX_NO_SPINNER=1` antes de correr `twx`.
 
 ## Advanced CLI (`npm run ocr`)
 
