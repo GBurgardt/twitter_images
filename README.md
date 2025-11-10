@@ -110,5 +110,6 @@ Behind the scenes:
 - `current_session.txt` accumulates every XML response; clear it when you need a fresh log.
 - No borres los `.json` que generan gallery-dl / yt-dlp; contienen el texto original del tweet/caption y se usan como contexto.
 - Si necesitás limitar el tamaño de salida del agente, ajustá `OPENAI_AGENT_MAX_OUTPUT_TOKENS` (default 128 000).
+- El CLI comprime automáticamente cualquier video/audio >25 MB (límite de Whisper) usando `ffmpeg`; asegúrate de tenerlo instalado.
 
 The entire experience is optimized for a two-word command: paste the URL, add a short preset tag, and let the tool do the rest. The raw text, transcriptions, contexto, interpretación y respuesta final quedan listas en una sola corrida.

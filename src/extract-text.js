@@ -5,6 +5,7 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline/promises';
 import OpenAI from 'openai';
@@ -24,6 +25,7 @@ const DEFAULT_AGENT_MODEL = process.env.OPENAI_AGENT_MODEL || 'gpt-5-codex';
 const DEFAULT_AGENT_MAX_OUTPUT_TOKENS = Number(process.env.OPENAI_AGENT_MAX_OUTPUT_TOKENS ?? 128000);
 const DOWNLOAD_ROOT =
   process.env.OPENAI_OCR_DOWNLOAD_ROOT || path.join(process.cwd(), 'gallery-dl-runs');
+const MAX_WHISPER_FILE_BYTES = 25 * 1024 * 1024;
 const SPINNER_ENABLED = process.stdout.isTTY && process.env.TWX_NO_SPINNER !== '1';
 let DEBUG_ENABLED = process.env.TWX_DEBUG === '1';
 
@@ -286,12 +288,21 @@ async function extractTextFromImage({ client, filePath, prompt }) {
 }
 
 async function transcribeMedia({ client, filePath }) {
-  const stream = createReadStream(filePath);
-  const response = await client.audio.transcriptions.create({
-    model: DEFAULT_TRANSCRIBE_MODEL,
-    file: stream,
-    response_format: 'text'
-  });
+  const prepared = await prepareAudioForWhisper(filePath);
+  const stream = createReadStream(prepared.path);
+  let response;
+
+  try {
+    response = await client.audio.transcriptions.create({
+      model: DEFAULT_TRANSCRIBE_MODEL,
+      file: stream,
+      response_format: 'text'
+    });
+  } finally {
+    if (prepared.cleanup) {
+      await prepared.cleanup();
+    }
+  }
 
   if (!response) {
     throw new Error(`Empty transcription for ${filePath}`);
@@ -305,6 +316,52 @@ async function transcribeMedia({ client, filePath }) {
 async function readPlainText(filePath) {
   const data = await fs.readFile(filePath, 'utf8');
   return data.trim();
+}
+
+async function prepareAudioForWhisper(filePath) {
+  const stats = await fs.stat(filePath);
+  if (stats.size <= MAX_WHISPER_FILE_BYTES) {
+    return { path: filePath, cleanup: null };
+  }
+
+  console.log('\ncompressing media for whisper…');
+  return transcodeForWhisper(filePath);
+}
+
+async function transcodeForWhisper(filePath) {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'twx-audio-'));
+  const basename = path.basename(filePath, path.extname(filePath));
+  const targetPath = path.join(tmpDir, `${basename}-twx.m4a`);
+  const args = [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-y',
+    '-i',
+    filePath,
+    '-vn',
+    '-ac',
+    '1',
+    '-ar',
+    '16000',
+    '-b:a',
+    '64k',
+    targetPath
+  ];
+
+  try {
+    await runExternalCommand('ffmpeg', args, { stdio: 'inherit' });
+  } catch (error) {
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    throw new Error(
+      'ffmpeg is required to compress media >25MB before Whisper transcription. Install ffmpeg or compress the file manually.'
+    );
+  }
+
+  return {
+    path: targetPath,
+    cleanup: () => fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  };
 }
 
 async function downloadRemoteMedia(url) {
@@ -361,13 +418,13 @@ async function runGalleryDl(url, baseDir) {
   await runExternalCommand('gallery-dl', args);
 }
 
-async function runExternalCommand(command, args) {
+async function runExternalCommand(command, args, { stdio = 'inherit' } = {}) {
   debugLog('Executing command:', command, args);
   await new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: 'inherit' });
+    const child = spawn(command, args, { stdio });
     child.on('error', (error) => {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
-        reject(new Error(`Comando ${command} no encontrado. Instalalo y sumalo al PATH.`));
+        reject(new Error(`${command} not found. Install it and ensure it is on your PATH.`));
         return;
       }
       reject(error);
