@@ -43,7 +43,7 @@ Examples:
 | `musk` (default) | `m`, `mx`, `max`, `elon` | Direct, technical, action-first |
 | `bukowski` | `buk`, `bk` | Gritty, blunt recap |
 | `brief` | `brief`, `sum` | Three sharp executive bullets |
-| `raw` | `raw`, `plain`, `txt` | Returns the combined transcript verbatim |
+| `raw` | `raw`, `plain`, `txt` | Skips GPT entirely; prints only the raw OCR/transcription |
 
 Need a custom voice? Create a text file with your instruction (e.g., `brief.txt`) and run:
 
@@ -78,7 +78,7 @@ Behind the scenes:
 2. Images go through the multimodal model (`OPENAI_OCR_MODEL`, default `gpt-4.1-mini`).
 3. Videos and audio go through Whisper (`OPENAI_TRANSCRIBE_MODEL`, default `whisper-1`).
 4. Text files (e.g., tweet captions saved by `gallery-dl`) are read directly.
-5. Results feed into the post-processor defined in `prompts/agent_prompt.txt`, which always outputs:
+5. Results feed into the post-processor defined in `prompts/agent_prompt.txt`, powered by `gpt-5-codex` with high reasoning effort, which always outputs:
    - `<internal_reflection>` long-form reasoning (hidden unless requested)
    - `<action_plan>` prioritized steps
    - `<final_response>` the short answer in the requested tone

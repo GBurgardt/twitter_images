@@ -18,7 +18,7 @@ const DEFAULT_IMAGE_PROMPT =
 const DEFAULT_VISION_MODEL = process.env.OPENAI_OCR_MODEL || 'gpt-4.1-mini';
 const MAX_OUTPUT_TOKENS = Number(process.env.OPENAI_OCR_MAX_OUTPUT_TOKENS ?? 800);
 const DEFAULT_TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'whisper-1';
-const DEFAULT_AGENT_MODEL = process.env.OPENAI_AGENT_MODEL || 'gpt-4.1-mini';
+const DEFAULT_AGENT_MODEL = process.env.OPENAI_AGENT_MODEL || 'gpt-5-codex';
 const DOWNLOAD_ROOT =
   process.env.OPENAI_OCR_DOWNLOAD_ROOT || path.join(process.cwd(), 'gallery-dl-runs');
 
@@ -179,9 +179,27 @@ async function main() {
     }
   }
 
+  const normalizedStyle = normalizeStyle(options.style);
+  const hasCustomStyleInput = Boolean(options.styleFile || options.styleText);
+  const rawMode = normalizedStyle === 'raw' && !hasCustomStyleInput;
+
+  if (rawMode) {
+    const combined = results
+      .filter((entry) => entry.text)
+      .map((entry) => `### ${entry.file}\n${entry.text}`)
+      .join('\n\n');
+    if (combined) {
+      console.log('\n--- RAW TRANSCRIPTS (no GPT processing) ---');
+      console.log(combined);
+    }
+  }
+
   const shouldRunAgent = Boolean(
-    (options.style || options.styleFile || options.styleText) && results.some((entry) => entry.text)
+    !rawMode &&
+      (options.style || options.styleFile || options.styleText) &&
+      results.some((entry) => entry.text)
   );
+
   if (shouldRunAgent) {
     await runInsightAgent({
       client,
@@ -371,6 +389,7 @@ async function runInsightAgent({
 
   const response = await client.responses.create({
     model: DEFAULT_AGENT_MODEL,
+    reasoning: { effort: 'high' },
     input: [
       {
         role: 'system',
