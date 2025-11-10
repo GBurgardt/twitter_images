@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import fs from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
@@ -15,6 +15,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const AGENT_PROMPT_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt.txt');
 const DEFAULT_SESSION_LOG = path.join(PROJECT_ROOT, 'current_session.txt');
+
+dotenv.config({ path: path.join(PROJECT_ROOT, '.env'), override: false });
 
 const DEFAULT_IMAGE_PROMPT =
   'Extraé todo el texto legible de esta imagen. Conservá saltos de línea y espaciados evidentes y devolvé sólo el texto crudo.';
