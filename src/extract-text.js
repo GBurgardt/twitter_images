@@ -244,8 +244,10 @@ async function main() {
   );
   debugLog('Should run agent?', shouldRunAgent);
 
+  let conversationHistory = [];
+
   if (shouldRunAgent) {
-    await runInsightAgent({
+    const seedHistory = await runInsightAgent({
       client,
       results,
       style: options.style,
@@ -255,6 +257,23 @@ async function main() {
       sessionLog: options.sessionLog,
       agentPromptPath: options.agentPromptPath,
       debug: DEBUG_ENABLED
+    });
+    conversationHistory = seedHistory || [];
+  }
+
+  if (
+    shouldRunAgent &&
+    supportsInteractivePrompts() &&
+    !options.json &&
+    !rawMode &&
+    results.some((entry) => entry.text)
+  ) {
+    await startConversationLoop({
+      client,
+      results,
+      options,
+      conversationHistory,
+      agentPromptPath: options.agentPromptPath
     });
   }
 }
@@ -501,22 +520,67 @@ async function runInsightAgent({
       ? await fs.readFile(path.resolve(styleFile), 'utf8')
       : inlineCustom;
 
+  const result = await generateAgentResponse({
+    client,
+    promptSource,
+    results,
+    normalizedStyle,
+    preset,
+    customStyle,
+    conversationHistory: [],
+    spinnerLabel: 'generating…',
+    showSpacer: true
+  });
+
+  if (!result || !result.finalResponse) {
+    return [];
+  }
+
+  const { reflection, plan, finalResponse, xml } = result;
+
+  printFinalResponse(finalResponse);
+
+  await handleReflectionOutput({
+    reflection,
+    xml,
+    planText: plan?.trim() ?? '',
+    responseText: finalResponse?.trim() ?? '',
+    showReflection,
+    sessionLog
+  });
+
+  return finalResponse ? [{ role: 'assistant', content: finalResponse.trim() }] : [];
+}
+
+async function generateAgentResponse({
+  client,
+  promptSource,
+  results,
+  normalizedStyle,
+  preset,
+  customStyle,
+  conversationHistory = [],
+  spinnerLabel = 'generating…',
+  showSpacer = false
+}) {
   let response = null;
   let omitContext = false;
+
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const payload = buildAgentPayload({
       results,
       styleKey: normalizedStyle,
       preset,
       customStyle,
-      omitContext
+      omitContext,
+      conversationHistory
     });
     debugLog('Payload sent to agent:\n' + payload);
 
-    if (attempt === 0) {
+    if (attempt === 0 && showSpacer) {
       console.log('');
     }
-    const agentSpinner = startSpinner(attempt === 0 ? 'generating…' : 'regenerating…');
+    const spinner = startSpinner(attempt === 0 ? spinnerLabel : 'retrying…');
 
     try {
       response = await client.responses.create({
@@ -534,10 +598,10 @@ async function runInsightAgent({
           }
         ]
       });
-      agentSpinner.succeed('plan ready');
+      spinner.succeed(attempt === 0 ? 'plan ready' : 'retry succeeded');
       break;
     } catch (error) {
-      agentSpinner.fail('plan generation failed');
+      spinner.fail('plan generation failed');
       if (isInvalidPromptError(error) && !omitContext) {
         console.warn('Prompt was flagged; retrying with captions trimmed.');
         omitContext = true;
@@ -558,13 +622,13 @@ async function runInsightAgent({
   if (!rawXml) {
     console.warn('Agent returned empty output.');
     debugLog('Empty output_text');
-    return;
+    return null;
   }
   const xml = extractResponseBlock(rawXml);
   if (!xml) {
     console.warn('Agent output did not contain a <response> block.');
     debugLog('Response without <response> block:\n' + rawXml);
-    return;
+    return null;
   }
   if (xml !== rawXml) {
     debugLog('Extracted <response> block from noisy output.');
@@ -584,19 +648,17 @@ async function runInsightAgent({
     debugLog('Missing <final_response> in XML');
   }
 
-  printFinalResponse(finalResponse);
-
-  await handleReflectionOutput({
-    reflection,
-    xml,
-    planText: plan?.trim() ?? '',
-    responseText: finalResponse?.trim() ?? '',
-    showReflection,
-    sessionLog
-  });
+  return { reflection, plan, finalResponse, xml };
 }
 
-function buildAgentPayload({ results, styleKey, preset, customStyle, omitContext = false }) {
+function buildAgentPayload({
+  results,
+  styleKey,
+  preset,
+  customStyle,
+  omitContext = false,
+  conversationHistory = []
+}) {
   const blocks = [];
   blocks.push('Idioma obligatorio: español neutro, tono directo y pragmático.');
   blocks.push('Cubrir interpretación y respuesta en una sola narrativa; no insertes encabezados explícitos.');
@@ -621,6 +683,18 @@ ${preset}`);
   if (customStyle?.trim()) {
     blocks.push(`User inline request:
 ${customStyle.trim()}`);
+  }
+
+  if (conversationHistory.length) {
+    const dialog = conversationHistory
+      .map((turn) => {
+        const safeRole = turn.role === 'assistant' ? 'assistant' : 'user';
+        return `<turn role="${safeRole}">
+${turn.content}
+</turn>`;
+      })
+      .join('\n');
+    blocks.push('<dialog_history>\n' + dialog + '\n</dialog_history>');
   }
 
   blocks.push(
@@ -939,16 +1013,54 @@ async function handleReflectionOutput({
     return;
   }
 
-  if (!supportsInteractivePrompts()) {
-    console.log(`\nReflection saved to ${logPath}`);
+  console.log(`\nReflection saved to ${logPath}. Use --show-reflection to print it inline.`);
+}
+
+async function startConversationLoop({ client, results, options, conversationHistory, agentPromptPath }) {
+  const promptPath = agentPromptPath ? path.resolve(agentPromptPath) : AGENT_PROMPT_PATH;
+  const promptSource = await fs.readFile(promptPath, 'utf8');
+  if (!conversationHistory.length) {
     return;
   }
+  const normalizedStyle = normalizeStyle(options.style);
+  const preset = normalizedStyle && STYLE_PRESETS[normalizedStyle];
 
-  console.log(`\nReflection saved to ${logPath}.`);
-  const choice = (await promptUser('press [r] to open it now or Enter to continue: ')).toLowerCase();
-  if (choice === 'r') {
-    await showReflectionWindow(reflection, planText, responseText);
-    console.log(`\n(reflection saved in ${logPath})`);
+  console.log('\nchat mode · press Enter or :q to exit');
+
+  while (true) {
+    const input = await promptUser('\nask elon › ');
+    const trimmed = input?.trim();
+    if (!trimmed || trimmed.toLowerCase() === ':q') {
+      console.log('\nchat closed.');
+      break;
+    }
+
+    conversationHistory.push({ role: 'user', content: trimmed });
+
+    const responseData = await generateAgentResponse({
+      client,
+      promptSource,
+      results,
+      normalizedStyle,
+      preset,
+      customStyle: trimmed,
+      conversationHistory,
+      spinnerLabel: 'replying…',
+      showSpacer: false
+    });
+
+    if (!responseData || !responseData.finalResponse) {
+      console.warn('Agent did not return a reply.');
+      break;
+    }
+
+    console.log('');
+    printFinalResponse(responseData.finalResponse);
+    conversationHistory.push({ role: 'assistant', content: responseData.finalResponse.trim() });
+
+    if (responseData.xml) {
+      await appendSessionLog(options.sessionLog || DEFAULT_SESSION_LOG, responseData.xml);
+    }
   }
 }
 

@@ -55,6 +55,10 @@ twx https://x.com/... musk --style-file brief.txt
 
 Todos los planes y respuestas salen en español (tono directo) para que puedas copiar y pegar sin traducir. La reflexión interna completa se guarda en `current_session.txt`; agregá `--show-reflection` si querés verla en pantalla al instante.
 
+### Chat inline
+
+Después del primer resumen Musk, el CLI queda abierto como chat: respondé en el prompt `ask elon ›`, seguí conversando y salí con Enter o `:q`. Cada turno mantiene el historial (XML) para que la voz conserve contexto.
+
 ### Feedback visual
 
 El CLI usa spinners de [ora](https://github.com/sindresorhus/ora) para mostrar el progreso mientras descarga, procesa medios o genera el plan con `gpt-5-codex`. Si preferís salida “silenciosa”, exportá `TWX_NO_SPINNER=1` antes de correr `twx`.
