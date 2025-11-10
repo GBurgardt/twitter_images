@@ -63,7 +63,7 @@ Al terminar, si hay reflexión interna oculta verás el mensaje `Presioná [r] p
 
 ### Resultado final
 
-El único bloque mostrado por defecto es un resumen de 3‑7 párrafos (3‑5 líneas cada uno) en voz Musk, explicando con claridad la idea central del video/imágenes. El primer párrafo arranca con “INTERPRETACIÓN PRAGMÁTICA:” y el último con “RESPUESTA:”. Todo lo demás (interpretación intermedia y reflexión interna) queda detrás del modal interactivo o en el log.
+El único bloque mostrado por defecto es un resumen de 3‑7 párrafos (3‑5 líneas cada uno) en voz Musk, explicando con claridad la idea central del video/imágenes. El primer párrafo arranca con “INTERPRETACIÓN PRAGMÁTICA:” y el último con “RESPUESTA:”. Todo lo demás (interpretación intermedia, texto del tweet/caption, reflexión interna) queda detrás del modal interactivo o en el log.
 
 ### Depuración total
 
@@ -98,6 +98,7 @@ Behind the scenes:
    - `<internal_reflection>` long-form reasoning (visible sólo si lo pedís)
    - `<action_plan>` la interpretación pragmática (oculta por defecto)
    - `<final_response>` 3‑7 párrafos en voz Musk que se muestran como output final
+6. El prompt recibe, junto a cada medio, el texto del tweet/caption y descripciones de YouTube para que el resumen entienda el contexto original.
 
 ## Tips
 
@@ -105,5 +106,6 @@ Behind the scenes:
 - Use `--style raw` when you only want transcripts/OCR without any summarization.
 - Store frequently used briefs in `prompts/*.txt` and reference them with `--style-file`.
 - `current_session.txt` accumulates every XML response; clear it when you need a fresh log.
+- No borres los `.json` que generan gallery-dl / yt-dlp; contienen el texto original del tweet/caption y se usan como contexto.
 
-The entire experience is optimized for a two-word command: paste the URL, add a short preset tag, and let the tool do the rest. The raw text, transcriptions, interpretación y respuesta final quedan listas en una sola corrida.
+The entire experience is optimized for a two-word command: paste the URL, add a short preset tag, and let the tool do the rest. The raw text, transcriptions, contexto, interpretación y respuesta final quedan listas en una sola corrida.

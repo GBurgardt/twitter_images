@@ -149,6 +149,8 @@ async function main() {
     exitWithUsage('No hay medios compatibles para procesar.');
   }
 
+  const contextMap = await gatherContextForItems(mediaItems);
+
   const results = [];
 
   for (const item of mediaItems) {
@@ -175,7 +177,8 @@ async function main() {
         throw new Error(`Tipo de medio no soportado: ${relativePath}`);
       }
 
-      results.push({ file: relativePath, type: item.type, text });
+      const context = contextMap.get(absolutePath) || null;
+      results.push({ file: relativePath, type: item.type, text, context });
       debugLog('Texto obtenido', { file: relativePath, type: item.type, preview: text.slice(0, 120) });
       spinner.succeed(`Listo ${path.basename(relativePath)}`);
       if (!options.json) {
@@ -183,7 +186,8 @@ async function main() {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      results.push({ file: relativePath, type: item.type, error: message });
+      const context = contextMap.get(absolutePath) || null;
+      results.push({ file: relativePath, type: item.type, error: message, context });
       debugLog('Error procesando', relativePath, message);
       spinner.fail(`Error en ${path.basename(relativePath)}`);
       if (!options.json) {
@@ -341,7 +345,17 @@ async function downloadWithGalleryDl(url) {
 async function downloadWithYtDlp(url) {
   await fs.mkdir(DOWNLOAD_ROOT, { recursive: true });
   const runDir = await fs.mkdtemp(path.join(DOWNLOAD_ROOT, 'yt-'));
-  const args = ['-P', runDir, '-o', '%(title)s.%(ext)s', '-f', 'bestaudio/best', '--no-progress', url];
+  const args = [
+    '-P',
+    runDir,
+    '-o',
+    '%(title)s.%(ext)s',
+    '-f',
+    'bestaudio/best',
+    '--no-progress',
+    '--write-info-json',
+    url
+  ];
   debugLog('Descargando con yt-dlp en', runDir, 'URL', url, 'args', args);
   await runExternalCommand('yt-dlp', args);
   const items = await collectMedia(runDir, { recursive: true });
@@ -350,7 +364,7 @@ async function downloadWithYtDlp(url) {
 }
 
 async function runGalleryDl(url, baseDir) {
-  const args = ['-d', baseDir, url];
+  const args = ['--write-info-json', '--write-metadata', '-d', baseDir, url];
   await runExternalCommand('gallery-dl', args);
 }
 
@@ -529,6 +543,9 @@ function buildAgentPayload({ results, styleKey, preset, customStyle }) {
           } else {
             base.push(`Texto:\n${entry.text || '[Sin texto detectado]'}`);
           }
+          if (entry.context) {
+            base.push(`Contexto:\n${entry.context}`);
+          }
           return base.join('\n');
         })
         .join('\n\n')
@@ -543,6 +560,131 @@ function safeStringify(value) {
   } catch (error) {
     return `[No se pudo serializar: ${error instanceof Error ? error.message : error}]`;
   }
+}
+
+async function gatherContextForItems(items) {
+  const contextMap = new Map();
+  const infoCache = new Map();
+  for (const item of items) {
+    const absolutePath = path.resolve(item.path);
+    const contexts = [];
+
+    const perFileMeta = await readJSONIfExists(`${absolutePath}.json`);
+    if (perFileMeta) {
+      const perFileContext = extractContextText(perFileMeta);
+      if (perFileContext) {
+        contexts.push(perFileContext);
+      }
+    }
+
+    const dir = path.dirname(absolutePath);
+    let dirContext = infoCache.get(dir);
+    if (dirContext === undefined) {
+      dirContext = await loadInfoContext(dir);
+      infoCache.set(dir, dirContext);
+    }
+    if (dirContext) {
+      contexts.push(dirContext);
+    }
+
+    const combined = contexts.filter(Boolean).join('\n');
+    if (combined) {
+      contextMap.set(absolutePath, combined);
+      debugLog('Contexto detectado para', absolutePath, combined);
+    }
+  }
+  return contextMap;
+}
+
+async function loadInfoContext(dir) {
+  try {
+    const entries = await fs.readdir(dir);
+    const contexts = [];
+    for (const name of entries) {
+      if (!name.endsWith('.info.json')) {
+        continue;
+      }
+      const meta = await readJSONIfExists(path.join(dir, name));
+      if (!meta) {
+        continue;
+      }
+      const text = extractContextText(meta);
+      if (text) {
+        contexts.push(text);
+      }
+    }
+    return contexts.filter(Boolean).join('\n');
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      return '';
+    }
+    debugLog('Error leyendo info.json en', dir, error);
+    return '';
+  }
+}
+
+async function readJSONIfExists(filePath) {
+  try {
+    const data = await fs.readFile(filePath, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      return null;
+    }
+    debugLog('No se pudo leer JSON', filePath, error);
+    return null;
+  }
+}
+
+function extractContextText(meta) {
+  if (!meta || typeof meta !== 'object') {
+    return '';
+  }
+
+  const segments = new Set();
+  const add = (label, value, max = 1200) => {
+    if (typeof value !== 'string') {
+      return;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return;
+    }
+    const limited = trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
+    segments.add(`${label}: ${limited}`);
+  };
+
+  const textFields = [
+    ['tweet_text', 'Texto del tweet'],
+    ['full_text', 'Texto completo'],
+    ['text', 'Texto'],
+    ['description', 'Descripción'],
+    ['caption', 'Caption'],
+    ['title', 'Título'],
+    ['summary', 'Resumen'],
+    ['content', 'Contenido'],
+    ['commentary', 'Comentario']
+  ];
+  for (const [key, label] of textFields) {
+    add(label, meta[key]);
+  }
+
+  const poster = meta.author || meta.uploader || meta.owner || meta.channel;
+  add('Autor', poster);
+
+  if (typeof meta.upload_date === 'string' && meta.upload_date.trim()) {
+    segments.add(`Fecha: ${meta.upload_date.trim()}`);
+  }
+
+  if (Array.isArray(meta.tags) && meta.tags.length) {
+    segments.add(`Tags: ${meta.tags.slice(0, 12).join(', ')}`);
+  }
+
+  if (Array.isArray(meta.keywords) && meta.keywords.length) {
+    segments.add(`Keywords: ${meta.keywords.slice(0, 12).join(', ')}`);
+  }
+
+  return Array.from(segments).join('\n');
 }
 
 function extractTag(xml, tag) {
