@@ -111,3 +111,6 @@ images/
 *.swp
 *.swo
 *~
+
+# Codex session
+.last-codex
