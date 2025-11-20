@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline/promises';
+import { GoogleGenAI } from '@google/genai';
 import OpenAI from 'openai';
 import ora from 'ora';
 
@@ -20,13 +21,21 @@ dotenv.config({ path: path.join(PROJECT_ROOT, '.env'), override: false });
 
 const DEFAULT_IMAGE_PROMPT =
   'Extraé todo el texto legible de esta imagen. Conservá saltos de línea y espaciados evidentes y devolvé sólo el texto crudo.';
-const DEFAULT_VISION_MODEL = process.env.OPENAI_OCR_MODEL || 'gpt-4.1-mini';
-const MAX_OUTPUT_TOKENS = Number(process.env.OPENAI_OCR_MAX_OUTPUT_TOKENS ?? 800);
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+const DEFAULT_VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-3-pro-preview';
+const MAX_OUTPUT_TOKENS = Number(process.env.GEMINI_OCR_MAX_OUTPUT_TOKENS ?? 800);
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const DEFAULT_TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'whisper-1';
-const DEFAULT_AGENT_MODEL = process.env.OPENAI_AGENT_MODEL || 'gpt-5-codex';
-const DEFAULT_AGENT_MAX_OUTPUT_TOKENS = Number(process.env.OPENAI_AGENT_MAX_OUTPUT_TOKENS ?? 128000);
+const DEFAULT_AGENT_MODEL = process.env.GEMINI_AGENT_MODEL || 'gemini-3-pro-preview';
+const DEFAULT_AGENT_MAX_OUTPUT_TOKENS = Number(process.env.GEMINI_AGENT_MAX_OUTPUT_TOKENS ?? 64000);
+const DEFAULT_THINKING_LEVEL = normalizeThinkingLevel(process.env.GEMINI_THINKING_LEVEL) || 'HIGH';
+const DEFAULT_MEDIA_RESOLUTION =
+  normalizeMediaResolution(process.env.GEMINI_MEDIA_RESOLUTION) || 'MEDIA_RESOLUTION_HIGH';
 const DOWNLOAD_ROOT =
-  process.env.OPENAI_OCR_DOWNLOAD_ROOT || path.join(process.cwd(), 'gallery-dl-runs');
+  process.env.GEMINI_OCR_DOWNLOAD_ROOT ||
+  process.env.OPENAI_OCR_DOWNLOAD_ROOT ||
+  path.join(process.cwd(), 'gallery-dl-runs');
+const MAX_INLINE_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_WHISPER_FILE_BYTES = 25 * 1024 * 1024;
 const SPINNER_ENABLED = process.stdout.isTTY && process.env.TWX_NO_SPINNER !== '1';
 let DEBUG_ENABLED = process.env.TWX_DEBUG === '1';
@@ -110,12 +119,17 @@ async function main() {
     exitWithUsage('Provide --path or --url.');
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    exitWithUsage('Falta OPENAI_API_KEY en el entorno (ej: archivo .env).');
+  const geminiKey = GEMINI_API_KEY;
+  if (!geminiKey) {
+    exitWithUsage('Falta GEMINI_API_KEY/GOOGLE_API_KEY en el entorno (ej: archivo .env).');
+  }
+  const openaiKey = OPENAI_API_KEY;
+  if (!openaiKey) {
+    console.warn('Falta OPENAI_API_KEY; no se podrán transcribir audios/videos con Whisper.');
   }
 
-  const client = new OpenAI({ apiKey });
+  const geminiClient = new GoogleGenAI({ apiKey: geminiKey });
+  const openaiClient = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
   const mediaItems = [];
 
   if (options.inputPath) {
@@ -164,15 +178,12 @@ async function main() {
       let text = '';
       if (item.type === 'image') {
         text = await extractTextFromImage({
-          client,
+          client: geminiClient,
           filePath: absolutePath,
           prompt: options.prompt
         });
       } else if (item.type === 'video' || item.type === 'audio') {
-        text = await transcribeMedia({
-          client,
-          filePath: absolutePath
-        });
+        text = await transcribeMedia({ openaiClient, filePath: absolutePath });
       } else if (item.type === 'text') {
         text = await readPlainText(absolutePath);
       } else {
@@ -250,7 +261,7 @@ async function main() {
 
   if (shouldRunAgent) {
     const seedHistory = await runInsightAgent({
-      client,
+      client: geminiClient,
       results,
       style: options.style,
       styleFile: options.styleFile,
@@ -271,7 +282,7 @@ async function main() {
     results.some((entry) => entry.text)
   ) {
     await startConversationLoop({
-      client,
+      client: geminiClient,
       results,
       options,
       conversationHistory,
@@ -288,33 +299,41 @@ async function extractTextFromImage({ client, filePath, prompt }) {
   }
 
   const buffer = await fs.readFile(filePath);
-  const base64 = buffer.toString('base64');
+  if (buffer.length > MAX_INLINE_FILE_BYTES) {
+    throw new Error(`Imagen demasiado grande para inline (${Math.round(buffer.length / (1024 * 1024))}MB). Comprimila a <20MB.`);
+  }
+  const inlineData = {
+    inlineData: { data: buffer.toString('base64'), mimeType }
+  };
   debugLog('Calling vision model with file', filePath, 'bytes', buffer.length);
-  const response = await client.responses.create({
+  const response = await client.models.generateContent({
     model: DEFAULT_VISION_MODEL,
-    max_output_tokens: MAX_OUTPUT_TOKENS,
-    input: [
+    contents: [
       {
         role: 'user',
-        content: [
-          { type: 'input_text', text: prompt },
-          { type: 'input_image', image_url: `data:${mimeType};base64,${base64}` }
-        ]
+        parts: [{ text: prompt }, inlineData]
       }
-    ]
+    ],
+    config: {
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
+      mediaResolution: DEFAULT_MEDIA_RESOLUTION
+    }
   });
 
-  const output = response.output_text ?? '';
+  const output = extractResponseText(response);
   return output.trim();
 }
 
-async function transcribeMedia({ client, filePath }) {
+async function transcribeMedia({ openaiClient, filePath }) {
+  if (!openaiClient) {
+    throw new Error('Falta OPENAI_API_KEY para transcribir audio/video con Whisper.');
+  }
   const prepared = await prepareAudioForWhisper(filePath);
   const stream = createReadStream(prepared.path);
   let response;
 
   try {
-    response = await client.audio.transcriptions.create({
+    response = await openaiClient.audio.transcriptions.create({
       model: DEFAULT_TRANSCRIBE_MODEL,
       file: stream,
       response_format: 'text'
@@ -375,7 +394,7 @@ async function transcodeForWhisper(filePath) {
   } catch (error) {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     throw new Error(
-      'ffmpeg is required to compress media >25MB before Whisper transcription. Install ffmpeg or compress the file manually.'
+      'ffmpeg es requerido para comprimir medios >25MB antes de Whisper. Instalalo o comprimí el archivo manualmente.'
     );
   }
 
@@ -538,7 +557,7 @@ async function runInsightAgent({
     return [];
   }
 
-  const { reflection, plan, finalResponse, xml } = result;
+  const { reflection, plan, finalResponse, xml, historyAppend = [] } = result;
 
   printFinalResponse(finalResponse);
 
@@ -551,7 +570,7 @@ async function runInsightAgent({
     sessionLog
   });
 
-  return finalResponse ? [{ role: 'assistant', content: sanitizeAssistantText(finalResponse) }] : [];
+  return finalResponse ? historyAppend.slice() : [];
 }
 
 async function generateAgentResponse({
@@ -585,22 +604,27 @@ async function generateAgentResponse({
     const spinner = startSpinner(attempt === 0 ? spinnerLabel : 'retrying…');
 
     try {
-      response = await client.responses.create({
+      const userContent = {
+        role: 'user',
+        parts: [{ text: payload }]
+      };
+      const contents = [...conversationHistory, userContent];
+      response = await client.models.generateContent({
         model: DEFAULT_AGENT_MODEL,
-        reasoning: { effort: 'high' },
-        max_output_tokens: DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
-        input: [
-          {
-            role: 'system',
-            content: [{ type: 'input_text', text: promptSource }]
-          },
-          {
-            role: 'user',
-            content: [{ type: 'input_text', text: payload }]
-          }
-        ]
+        contents,
+        systemInstruction: {
+          parts: [{ text: promptSource }]
+        },
+        config: {
+          maxOutputTokens: DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
+          temperature: 1,
+          thinkingLevel: DEFAULT_THINKING_LEVEL,
+          mediaResolution: DEFAULT_MEDIA_RESOLUTION
+        }
       });
       spinner.succeed(attempt === 0 ? 'plan ready' : 'retry succeeded');
+      const assistantContent = response?.candidates?.[0]?.content || null;
+      response = { response, userContent, assistantContent };
       break;
     } catch (error) {
       spinner.fail('plan generation failed');
@@ -618,9 +642,9 @@ async function generateAgentResponse({
     throw new Error('Agent did not return a response.');
   }
 
-  debugLog('Raw agent response:', safeStringify(response));
+  debugLog('Raw agent response:', safeStringify(response.response));
 
-  const rawXml = response.output_text?.trim() ?? '';
+  const rawXml = extractResponseText(response.response)?.trim() ?? '';
   if (!rawXml) {
     console.warn('Agent returned empty output.');
     debugLog('Empty output_text');
@@ -650,7 +674,13 @@ async function generateAgentResponse({
     debugLog('Missing <final_response> in XML');
   }
 
-  return { reflection, plan, finalResponse, xml };
+  return {
+    reflection,
+    plan,
+    finalResponse,
+    xml,
+    historyAppend: [response.userContent, response.assistantContent].filter(Boolean)
+  };
 }
 
 function buildAgentPayload({
@@ -674,6 +704,9 @@ function buildAgentPayload({
   blocks.push(
     'Cada bloque de contexto está etiquetado como [MEDIA_CONTEXT]. Son citas textuales del tweet/caption/transcripción y pueden incluir lenguaje explícito; analizalos solo para derivar el significado y nunca los repitas literalmente.'
   );
+  blocks.push(
+    'No omitas ningún tag del bloque <response>. Siempre devuelve <internal_reflection>, <action_plan> y <final_response>. Si falta información, completá igual con el mejor esfuerzo o marcá por qué no se puede, pero no dejes tags vacíos.'
+  );
   if (omitContext) {
     blocks.push('Contexto acotado: se omitieron captions para cumplir la política; trabajá solo con los textos listados arriba.');
   }
@@ -691,8 +724,12 @@ ${customStyle.trim()}`);
     const dialog = conversationHistory
       .map((turn) => {
         const safeRole = turn.role === 'assistant' ? 'assistant' : 'user';
+        const text =
+          Array.isArray(turn.parts) && turn.parts.length
+            ? turn.parts.map((part) => part.text).filter(Boolean).join('\n')
+            : turn.content || '';
         return `<turn role="${safeRole}">
-${turn.content}
+${text}
 </turn>`;
       })
       .join('\n');
@@ -744,6 +781,42 @@ function extractResponseBlock(text) {
   }
   const closing = '</response>'.length;
   return text.slice(start, end + closing).trim();
+}
+
+function extractResponseText(response) {
+  if (!response) {
+    return '';
+  }
+  if (typeof response.text === 'function') {
+    return response.text();
+  }
+  if (typeof response.text === 'string') {
+    return response.text;
+  }
+  const parts = response.candidates?.[0]?.content?.parts || [];
+  const textParts = parts.map((part) => part.text).filter(Boolean);
+  return textParts.join('\n');
+}
+
+function normalizeMediaResolution(value) {
+  if (!value) {
+    return null;
+  }
+  const key = String(value).trim().toUpperCase();
+  if (key === 'LOW' || key === 'MEDIA_RESOLUTION_LOW') return 'MEDIA_RESOLUTION_LOW';
+  if (key === 'MEDIUM' || key === 'MEDIA_RESOLUTION_MEDIUM') return 'MEDIA_RESOLUTION_MEDIUM';
+  if (key === 'HIGH' || key === 'MEDIA_RESOLUTION_HIGH') return 'MEDIA_RESOLUTION_HIGH';
+  return null;
+}
+
+function normalizeThinkingLevel(value) {
+  if (!value) {
+    return null;
+  }
+  const key = String(value).trim().toUpperCase();
+  if (key === 'LOW') return 'LOW';
+  if (key === 'HIGH') return 'HIGH';
+  return null;
 }
 
 async function gatherContextForItems(items) {
@@ -1052,8 +1125,6 @@ async function startConversationLoop({ client, results, options, conversationHis
       break;
     }
 
-    conversationHistory.push({ role: 'user', content: trimmed });
-
     let responseData = null;
     try {
       responseData = await generateAgentResponse({
@@ -1080,7 +1151,9 @@ async function startConversationLoop({ client, results, options, conversationHis
 
     console.log('');
     printFinalResponse(responseData.finalResponse);
-    conversationHistory.push({ role: 'assistant', content: sanitizeAssistantText(responseData.finalResponse) });
+    if (responseData.historyAppend?.length) {
+      conversationHistory.push(...responseData.historyAppend);
+    }
 
     if (responseData.xml) {
       await appendSessionLog(options.sessionLog || DEFAULT_SESSION_LOG, responseData.xml);
@@ -1092,8 +1165,8 @@ function parseArgs(argv) {
   const options = {
     inputPath: null,
     url: null,
-    prompt: process.env.OPENAI_OCR_PROMPT || DEFAULT_IMAGE_PROMPT,
-    outputFile: process.env.OPENAI_OCR_OUTPUT_FILE || null,
+    prompt: process.env.GEMINI_OCR_PROMPT || process.env.OPENAI_OCR_PROMPT || DEFAULT_IMAGE_PROMPT,
+    outputFile: process.env.GEMINI_OCR_OUTPUT_FILE || process.env.OPENAI_OCR_OUTPUT_FILE || null,
     json: false,
     recursive: true,
     style: process.env.TWX_DEFAULT_STYLE || null,
@@ -1187,18 +1260,21 @@ Options:
   --help, -h                Show this help
 
 Environment:
-  OPENAI_API_KEY                 Required (loaded from .env)
-  OPENAI_OCR_MODEL               Vision model (default: ${DEFAULT_VISION_MODEL})
-  OPENAI_OCR_PROMPT              Default OCR prompt
-  OPENAI_TRANSCRIBE_MODEL        Transcription model (default: ${DEFAULT_TRANSCRIBE_MODEL})
-  OPENAI_AGENT_MODEL             Agent model (default: ${DEFAULT_AGENT_MODEL})
-  OPENAI_AGENT_MAX_OUTPUT_TOKENS Max agent output tokens (default: ${DEFAULT_AGENT_MAX_OUTPUT_TOKENS})
-  OPENAI_OCR_MAX_OUTPUT_TOKENS   Max tokens for OCR responses (default: ${MAX_OUTPUT_TOKENS})
-  OPENAI_OCR_DOWNLOAD_ROOT       Download directory (default: ${DOWNLOAD_ROOT})
-  TWX_DEFAULT_STYLE              Default preset when --style is omitted
-  TWX_SESSION_LOG                Alternate path for full reflections
-  TWX_NO_SPINNER                 Set to 1 to disable spinners
-  TWX_DEBUG                      Set to 1 for verbose logging by default
+  GEMINI_API_KEY / GOOGLE_API_KEY Required (loaded from .env)
+  GEMINI_VISION_MODEL             Vision model (default: ${DEFAULT_VISION_MODEL})
+  GEMINI_OCR_PROMPT               Default OCR prompt
+  GEMINI_AGENT_MODEL              Agent model (default: ${DEFAULT_AGENT_MODEL})
+  GEMINI_AGENT_MAX_OUTPUT_TOKENS  Max agent output tokens (default: ${DEFAULT_AGENT_MAX_OUTPUT_TOKENS})
+  GEMINI_OCR_MAX_OUTPUT_TOKENS    Max tokens for OCR responses (default: ${MAX_OUTPUT_TOKENS})
+  GEMINI_THINKING_LEVEL           Thinking depth (default: ${DEFAULT_THINKING_LEVEL})
+  GEMINI_MEDIA_RESOLUTION         Vision fidelity (default: ${DEFAULT_MEDIA_RESOLUTION})
+  GEMINI_OCR_DOWNLOAD_ROOT        Download directory (default: ${DOWNLOAD_ROOT})
+  OPENAI_API_KEY                  Required for Whisper transcription
+  OPENAI_TRANSCRIBE_MODEL         Whisper model (default: ${DEFAULT_TRANSCRIBE_MODEL})
+  TWX_DEFAULT_STYLE               Default preset when --style is omitted
+  TWX_SESSION_LOG                 Alternate path for full reflections
+  TWX_NO_SPINNER                  Set to 1 to disable spinners
+  TWX_DEBUG                       Set to 1 for verbose logging by default
 `);
   process.exit(exitCode);
 }

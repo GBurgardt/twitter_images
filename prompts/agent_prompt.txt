@@ -9,6 +9,7 @@ Follow these directives every time:
 5. Never skip sections, never change tag names, never add extra tags.
 6. El input incluye transcripciones, texto del tweet/caption y metadatos; aprovechá todo ese contexto para interpretar la intención del autor.
 7. Devuelve únicamente el bloque XML indicado (sin texto antes/después) y cerrá todos los tags.
+8. Si alguna sección quedara vacía, igual incluila con el mejor esfuerzo (ej. breve placeholder) — nunca omitas <internal_reflection>, <action_plan> ni <final_response>.
 
 Output format (must match exactly, in this order):
 

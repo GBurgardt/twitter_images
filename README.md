@@ -5,15 +5,17 @@ Turn any tweet (images, videos, text) or YouTube clip into usable text and an ac
 ## Requirements
 
 1. Node.js 18+
-2. OpenAI API key (`.env` with `OPENAI_API_KEY=sk-...`)
-3. [gallery-dl](https://github.com/mikf/gallery-dl) on your `PATH` (tweet/thread downloads)
-4. [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org/) on your `PATH` (YouTube audio extraction)
+2. Google Gemini API key (`.env` with `GEMINI_API_KEY=...`) para el agente/OCR
+3. OpenAI API key (`.env` con `OPENAI_API_KEY=...`) para transcribir audio/video con Whisper
+4. [gallery-dl](https://github.com/mikf/gallery-dl) on your `PATH` (tweet/thread downloads)
+5. [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org/) on your `PATH` (YouTube audio extraction)
 
 Install JS deps and set up your key:
 
 ```bash
 npm install
-echo "OPENAI_API_KEY=sk-..." >> .env
+echo "GEMINI_API_KEY=..." >> .env
+echo "OPENAI_API_KEY=..." >> .env
 ```
 
 ## Quick start: the `twx` command
@@ -61,7 +63,7 @@ Después del primer resumen Musk, el CLI queda abierto como chat: respondé en e
 
 ### Feedback visual
 
-El CLI usa spinners de [ora](https://github.com/sindresorhus/ora) para mostrar el progreso mientras descarga, procesa medios o genera el plan con `gpt-5-codex`. Si preferís salida “silenciosa”, exportá `TWX_NO_SPINNER=1` antes de correr `twx`.
+El CLI usa spinners de [ora](https://github.com/sindresorhus/ora) para mostrar el progreso mientras descarga, procesa medios o genera el plan con `gemini-3-pro-preview`. Si preferís salida “silenciosa”, exportá `TWX_NO_SPINNER=1` antes de correr `twx`.
 
 ### Reflexión interactiva
 
@@ -97,10 +99,10 @@ Options:
 Behind the scenes:
 
 1. Files are downloaded to `gallery-dl-runs/run-*` (or `yt-*` for YouTube).
-2. Images go through the multimodal model (`OPENAI_OCR_MODEL`, default `gpt-4.1-mini`).
-3. Videos and audio go through Whisper (`OPENAI_TRANSCRIBE_MODEL`, default `whisper-1`).
+2. Images pasan por Gemini 3 (`GEMINI_VISION_MODEL`, default `gemini-3-pro-preview`) con media resolution alta para sacar texto fino.
+3. Videos y audio se comprimen si pesan >25 MB y se transcriben con Whisper (`OPENAI_TRANSCRIBE_MODEL`, default `whisper-1`), usando tu `OPENAI_API_KEY`.
 4. Text files (e.g., tweet captions saved by `gallery-dl`) are read directly.
-5. Results feed into the post-processor defined in `prompts/agent_prompt.txt`, powered by `gpt-5-codex` con razonamiento “high” y una ventana 400K/128K tokens según [OpenAI](https://openai.com/gpt-5/), lo que deja margen amplio para contexto, y siempre produce:
+5. Results feed into the post-processor defined in `prompts/agent_prompt.txt`, ahora corrido con `gemini-3-pro-preview` con `thinking_level=high`, ventana 1 M/64 k tokens y salida en español:
    - `<internal_reflection>` long-form reasoning (visible sólo si lo pedís)
    - `<action_plan>` la interpretación pragmática (oculta por defecto)
    - `<final_response>` 3‑7 párrafos en voz Musk que se muestran como output final
@@ -113,7 +115,7 @@ Behind the scenes:
 - Store frequently used briefs in `prompts/*.txt` and reference them with `--style-file`.
 - `current_session.txt` accumulates every XML response; clear it when you need a fresh log.
 - No borres los `.json` que generan gallery-dl / yt-dlp; contienen el texto original del tweet/caption y se usan como contexto.
-- Si necesitás limitar el tamaño de salida del agente, ajustá `OPENAI_AGENT_MAX_OUTPUT_TOKENS` (default 128 000).
-- El CLI comprime automáticamente cualquier video/audio >25 MB (límite de Whisper) usando `ffmpeg`; asegúrate de tenerlo instalado.
+- Si necesitás limitar el tamaño de salida del agente, ajustá `GEMINI_AGENT_MAX_OUTPUT_TOKENS` (default 64 000).
+- El CLI comprime automáticamente cualquier video/audio >25 MB antes de mandarlo a Whisper; asegúrate de tener ffmpeg instalado.
 
 The entire experience is optimized for a two-word command: paste the URL, add a short preset tag, and let the tool do the rest. The raw text, transcriptions, contexto, interpretación y respuesta final quedan listas en una sola corrida.
