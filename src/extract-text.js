@@ -15,6 +15,7 @@ import ora from 'ora';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const AGENT_PROMPT_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt.txt');
+const LONG_AGENT_PROMPT_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt_long.txt');
 const DEFAULT_SESSION_LOG = path.join(PROJECT_ROOT, 'current_session.txt');
 
 dotenv.config({ path: path.join(PROJECT_ROOT, '.env'), override: false });
@@ -37,13 +38,30 @@ const DOWNLOAD_ROOT =
   path.join(process.cwd(), 'gallery-dl-runs');
 const MAX_INLINE_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_WHISPER_FILE_BYTES = 25 * 1024 * 1024;
+const WHISPER_SEGMENT_SECONDS = clampInt(
+  process.env.WHISPER_SEGMENT_SECONDS || process.env.TWX_SEGMENT_SECONDS,
+  60,
+  1200,
+  480
+);
+const WHISPER_TARGET_BITRATE = process.env.WHISPER_AUDIO_BITRATE || '48k';
+const WHISPER_TARGET_SAMPLE_RATE = process.env.WHISPER_SAMPLE_RATE || '16000';
 const SPINNER_ENABLED = process.stdout.isTTY && process.env.TWX_NO_SPINNER !== '1';
 let DEBUG_ENABLED = process.env.TWX_DEBUG === '1';
+const DEFAULT_MODE = (process.env.TWX_MODE || 'standard').toLowerCase();
 
 function debugLog(...args) {
   if (DEBUG_ENABLED) {
     console.log('[DEBUG]', ...args);
   }
+}
+
+function clampInt(value, min, max, fallback) {
+  const num = Number(value);
+  if (Number.isFinite(num)) {
+    return Math.min(Math.max(Math.round(num), min), max);
+  }
+  return fallback;
 }
 
 const IMAGE_MIME_TYPES = {
@@ -215,6 +233,7 @@ async function main() {
       {
         vision_model: DEFAULT_VISION_MODEL,
         transcription_model: DEFAULT_TRANSCRIBE_MODEL,
+        mode: options.mode,
         results
       },
       null,
@@ -268,7 +287,7 @@ async function main() {
       styleText: options.styleText,
       showReflection: options.showReflection,
       sessionLog: options.sessionLog,
-      agentPromptPath: options.agentPromptPath,
+      agentPromptPath: resolveAgentPromptPath(options.mode, options.agentPromptPath),
       debug: DEBUG_ENABLED
     });
     conversationHistory = seedHistory || [];
@@ -286,7 +305,7 @@ async function main() {
       results,
       options,
       conversationHistory,
-      agentPromptPath: options.agentPromptPath
+      agentPromptPath: resolveAgentPromptPath(options.mode, options.agentPromptPath)
     });
   }
 }
@@ -329,28 +348,41 @@ async function transcribeMedia({ openaiClient, filePath }) {
     throw new Error('Falta OPENAI_API_KEY para transcribir audio/video con Whisper.');
   }
   const prepared = await prepareAudioForWhisper(filePath);
-  const stream = createReadStream(prepared.path);
-  let response;
+  const segmented = await splitAudioIfNeeded(prepared.path);
+
+  const cleanupTasks = [prepared.cleanup, segmented.cleanup].filter(Boolean);
+  const parts = [];
 
   try {
-    response = await openaiClient.audio.transcriptions.create({
-      model: DEFAULT_TRANSCRIBE_MODEL,
-      file: stream,
-      response_format: 'text'
-    });
+    for (const segmentPath of segmented.paths) {
+      const stream = createReadStream(segmentPath);
+      const response = await openaiClient.audio.transcriptions.create({
+        model: DEFAULT_TRANSCRIBE_MODEL,
+        file: stream,
+        response_format: 'text'
+      });
+      if (!response) {
+        throw new Error(`Empty transcription for ${segmentPath}`);
+      }
+      const text = typeof response === 'string' ? response : response.text;
+      debugLog('Whisper transcription captured', { filePath: segmentPath, chars: text?.length || 0 });
+      if (text && text.trim()) {
+        parts.push(text.trim());
+      }
+    }
   } finally {
-    if (prepared.cleanup) {
-      await prepared.cleanup();
+    for (const cleanup of cleanupTasks) {
+      if (cleanup) {
+        await cleanup();
+      }
     }
   }
 
-  if (!response) {
-    throw new Error(`Empty transcription for ${filePath}`);
+  if (!parts.length) {
+    throw new Error(`No transcription text produced for ${filePath}`);
   }
 
-  const text = typeof response === 'string' ? response : response.text;
-  debugLog('Whisper transcription captured', { filePath, chars: text?.length || 0 });
-  return (text || '').trim();
+  return parts.join('\n\n');
 }
 
 async function readPlainText(filePath) {
@@ -383,9 +415,9 @@ async function transcodeForWhisper(filePath) {
     '-ac',
     '1',
     '-ar',
-    '16000',
+    WHISPER_TARGET_SAMPLE_RATE,
     '-b:a',
-    '64k',
+    WHISPER_TARGET_BITRATE,
     targetPath
   ];
 
@@ -400,6 +432,65 @@ async function transcodeForWhisper(filePath) {
 
   return {
     path: targetPath,
+    cleanup: () => fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  };
+}
+
+async function splitAudioIfNeeded(filePath) {
+  const stats = await fs.stat(filePath);
+  if (stats.size <= MAX_WHISPER_FILE_BYTES) {
+    return { paths: [filePath], cleanup: null };
+  }
+
+  console.log(`\nsplitting audio into ~${Math.round(WHISPER_SEGMENT_SECONDS / 60)} min chunks for whisper…`);
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'twx-chunks-'));
+  const pattern = path.join(tmpDir, 'chunk-%03d.m4a');
+  const args = [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-y',
+    '-i',
+    filePath,
+    '-vn',
+    '-ac',
+    '1',
+    '-ar',
+    WHISPER_TARGET_SAMPLE_RATE,
+    '-b:a',
+    WHISPER_TARGET_BITRATE,
+    '-f',
+    'segment',
+    '-segment_time',
+    String(WHISPER_SEGMENT_SECONDS),
+    pattern
+  ];
+
+  await runExternalCommand('ffmpeg', args, { stdio: 'inherit' });
+
+  const entries = await fs.readdir(tmpDir);
+  const paths = entries
+    .filter((name) => name.startsWith('chunk-') && name.endsWith('.m4a'))
+    .map((name) => path.join(tmpDir, name))
+    .sort();
+
+  if (!paths.length) {
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    throw new Error('No se generaron segmentos de audio para Whisper.');
+  }
+
+  for (const chunkPath of paths) {
+    const chunkStats = await fs.stat(chunkPath);
+    if (chunkStats.size > MAX_WHISPER_FILE_BYTES) {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      throw new Error(
+        `Un segmento aún supera 25MB (${Math.round(chunkStats.size / (1024 * 1024))}MB). Bajá WHISPER_SEGMENT_SECONDS o WHISPER_AUDIO_BITRATE.`
+      );
+    }
+  }
+
+  return {
+    paths,
     cleanup: () => fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
   };
 }
@@ -819,6 +910,17 @@ function normalizeThinkingLevel(value) {
   return null;
 }
 
+function resolveAgentPromptPath(mode, overridePath) {
+  if (overridePath) {
+    return path.resolve(overridePath);
+  }
+  const key = (mode || '').toLowerCase();
+  if (key === 'long' || key === 'longform' || key === 'extenso') {
+    return LONG_AGENT_PROMPT_PATH;
+  }
+  return AGENT_PROMPT_PATH;
+}
+
 async function gatherContextForItems(items) {
   const contextMap = new Map();
   const infoCache = new Map();
@@ -1175,6 +1277,7 @@ function parseArgs(argv) {
     showReflection: false,
     sessionLog: process.env.TWX_SESSION_LOG || null,
     agentPromptPath: null,
+    mode: DEFAULT_MODE,
     debug: false
   };
 
@@ -1205,6 +1308,10 @@ function parseArgs(argv) {
       options.sessionLog = argv[++i];
     } else if (arg === '--agent-prompt') {
       options.agentPromptPath = argv[++i];
+    } else if (arg === '--mode') {
+      options.mode = (argv[++i] || '').toLowerCase();
+    } else if (arg === '--long' || arg === '--longform') {
+      options.mode = 'long';
     } else if (arg === '--debug') {
       options.debug = true;
     } else if (arg === '--help' || arg === '-h') {
@@ -1252,6 +1359,8 @@ Options:
   --style <name>            Preset (musk, buk, raw, brief, etc.)
   --style-file <file>       Custom preset instructions from a file
   --style-text <value>      Inline custom instructions
+  --mode <standard|long>    Usa el prompt largo sin afectar el modo estándar
+  --long / --longform       Atajo para --mode long
   --show-reflection         Print the internal reflection inline
   --session-log <file>      Where to store the XML response (default: ${DEFAULT_SESSION_LOG})
   --agent-prompt <file>     Override the agent prompt template
@@ -1271,10 +1380,14 @@ Environment:
   GEMINI_OCR_DOWNLOAD_ROOT        Download directory (default: ${DOWNLOAD_ROOT})
   OPENAI_API_KEY                  Required for Whisper transcription
   OPENAI_TRANSCRIBE_MODEL         Whisper model (default: ${DEFAULT_TRANSCRIBE_MODEL})
+  TWX_MODE                        default: ${DEFAULT_MODE} (use "long" for prompt extenso)
   TWX_DEFAULT_STYLE               Default preset when --style is omitted
   TWX_SESSION_LOG                 Alternate path for full reflections
   TWX_NO_SPINNER                  Set to 1 to disable spinners
   TWX_DEBUG                       Set to 1 for verbose logging by default
+  WHISPER_SEGMENT_SECONDS         Segment length (s) when audio >25MB (default: ${WHISPER_SEGMENT_SECONDS})
+  WHISPER_AUDIO_BITRATE           Bitrate for Whisper transcodes (default: ${WHISPER_TARGET_BITRATE})
+  WHISPER_SAMPLE_RATE             Sample rate for Whisper transcodes (default: ${WHISPER_TARGET_SAMPLE_RATE})
 `);
   process.exit(exitCode);
 }
