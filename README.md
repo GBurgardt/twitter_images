@@ -93,6 +93,7 @@ Options:
 - `--prompt "..."` — custom OCR instructions for images
 - `--style <preset>` / `--style-file file.txt` / `--style-text "inline"` — control the post-processor
 - `--mode long` / `--long` — usa el prompt largo (12–20 párrafos, más cobertura). Default: estándar.
+- `--mode top` / `--top` — usa el prompt de TOP 5 (cinco hallazgos explicados en detalle). Default: estándar.
 - `--json`, `--output file.json` — machine-readable output of every file
 - `--session-log custom.txt` — redirect the XML reflections
 - `--agent-prompt prompts/agent_prompt.txt` — swap the high-level prompt template
@@ -103,10 +104,10 @@ Behind the scenes:
 2. Images pasan por Gemini 3 (`GEMINI_VISION_MODEL`, default `gemini-3-pro-preview`) con media resolution alta para sacar texto fino.
 3. Videos y audio se comprimen si pesan >25 MB y se transcriben con Whisper (`OPENAI_TRANSCRIBE_MODEL`, default `whisper-1`), usando tu `OPENAI_API_KEY`.
 4. Text files (e.g., tweet captions saved by `gallery-dl`) are read directly.
-5. Results feed into the post-processor defined in `prompts/agent_prompt.txt` (o `prompts/agent_prompt_long.txt` si usás `--mode long`), corrido con `gemini-3-pro-preview` con `thinking_level=high`, ventana 1 M/64 k tokens y salida en español:
+5. Results feed into the post-processor defined en `prompts/agent_prompt.txt` (modo estándar), `prompts/agent_prompt_long.txt` (modo largo) o `prompts/agent_prompt_top.txt` (modo top 5), corrido con `gemini-3-pro-preview` con `thinking_level=high`, ventana 1 M/64 k tokens y salida en español:
    - `<internal_reflection>` long-form reasoning (visible sólo si lo pedís)
    - `<action_plan>` la interpretación pragmática (oculta por defecto)
-   - `<final_response>` 3‑7 párrafos en voz Musk (modo estándar) o 12‑20 párrafos (modo largo)
+   - `<final_response>` 3‑7 párrafos en voz Musk (modo estándar), 12‑20 párrafos (modo largo), o 5 bloques numerados explicando los hallazgos top (modo top)
 6. El prompt recibe, junto a cada medio, el texto del tweet/caption y descripciones de YouTube para que el resumen entienda el contexto original.
 
 ## Tips

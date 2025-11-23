@@ -16,6 +16,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const AGENT_PROMPT_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt.txt');
 const LONG_AGENT_PROMPT_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt_long.txt');
+const TOP_AGENT_PROMPT_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt_top.txt');
 const DEFAULT_SESSION_LOG = path.join(PROJECT_ROOT, 'current_session.txt');
 
 dotenv.config({ path: path.join(PROJECT_ROOT, '.env'), override: false });
@@ -136,6 +137,8 @@ async function main() {
   if (!options.inputPath && !options.url) {
     exitWithUsage('Provide --path or --url.');
   }
+
+  logRunInfo(options);
 
   const geminiKey = GEMINI_API_KEY;
   if (!geminiKey) {
@@ -918,6 +921,9 @@ function resolveAgentPromptPath(mode, overridePath) {
   if (key === 'long' || key === 'longform' || key === 'extenso') {
     return LONG_AGENT_PROMPT_PATH;
   }
+  if (key === 'top' || key === 'top5' || key === 'ranking') {
+    return TOP_AGENT_PROMPT_PATH;
+  }
   return AGENT_PROMPT_PATH;
 }
 
@@ -1119,6 +1125,23 @@ function sanitizeAssistantText(text) {
   return stripXmlTags(text).trim();
 }
 
+function logRunInfo(options) {
+  const resolvedPrompt = resolveAgentPromptPath(options.mode, options.agentPromptPath);
+  const modeLabel = options.mode || DEFAULT_MODE;
+  const styleLabel = options.style || 'default';
+  const inputLabel = options.url ? `url=${options.url}` : options.inputPath ? `path=${options.inputPath}` : 'n/a';
+
+  console.log(`
+[twx] mode=${modeLabel} prompt=${path.basename(resolvedPrompt)} style=${styleLabel}`);
+  console.log(
+    `[twx] vision=${DEFAULT_VISION_MODEL} agent=${DEFAULT_AGENT_MODEL} thinking=${DEFAULT_THINKING_LEVEL} media_res=${DEFAULT_MEDIA_RESOLUTION}`
+  );
+  console.log(
+    `[twx] whisper_model=${DEFAULT_TRANSCRIBE_MODEL} segment=${WHISPER_SEGMENT_SECONDS}s bitrate=${WHISPER_TARGET_BITRATE} sample_rate=${WHISPER_TARGET_SAMPLE_RATE}`
+  );
+  console.log(`[twx] source=${inputLabel}`);
+}
+
 function stripXmlTags(text) {
   if (!text) {
     return '';
@@ -1312,6 +1335,8 @@ function parseArgs(argv) {
       options.mode = (argv[++i] || '').toLowerCase();
     } else if (arg === '--long' || arg === '--longform') {
       options.mode = 'long';
+    } else if (arg === '--top' || arg === '--top5') {
+      options.mode = 'top';
     } else if (arg === '--debug') {
       options.debug = true;
     } else if (arg === '--help' || arg === '-h') {
@@ -1361,6 +1386,7 @@ Options:
   --style-text <value>      Inline custom instructions
   --mode <standard|long>    Usa el prompt largo sin afectar el modo estándar
   --long / --longform       Atajo para --mode long
+  --top / --top5            Atajo para --mode top (top 5 insights)
   --show-reflection         Print the internal reflection inline
   --session-log <file>      Where to store the XML response (default: ${DEFAULT_SESSION_LOG})
   --agent-prompt <file>     Override the agent prompt template
@@ -1380,7 +1406,7 @@ Environment:
   GEMINI_OCR_DOWNLOAD_ROOT        Download directory (default: ${DOWNLOAD_ROOT})
   OPENAI_API_KEY                  Required for Whisper transcription
   OPENAI_TRANSCRIBE_MODEL         Whisper model (default: ${DEFAULT_TRANSCRIBE_MODEL})
-  TWX_MODE                        default: ${DEFAULT_MODE} (use "long" for prompt extenso)
+  TWX_MODE                        default: ${DEFAULT_MODE} (use "long" for prompt extenso, "top" para top 5)
   TWX_DEFAULT_STYLE               Default preset when --style is omitted
   TWX_SESSION_LOG                 Alternate path for full reflections
   TWX_NO_SPINNER                  Set to 1 to disable spinners
