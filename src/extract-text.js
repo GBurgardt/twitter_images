@@ -11,6 +11,7 @@ import readline from 'node:readline/promises';
 import { GoogleGenAI } from '@google/genai';
 import OpenAI from 'openai';
 import ora from 'ora';
+import { PDFDocument } from 'pdf-lib';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -21,11 +22,8 @@ const DEFAULT_SESSION_LOG = path.join(PROJECT_ROOT, 'current_session.txt');
 
 dotenv.config({ path: path.join(PROJECT_ROOT, '.env'), override: false });
 
-const DEFAULT_IMAGE_PROMPT =
-  'Extraé todo el texto legible de esta imagen. Conservá saltos de línea y espaciados evidentes y devolvé sólo el texto crudo.';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 const DEFAULT_VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-3-pro-preview';
-const MAX_OUTPUT_TOKENS = Number(process.env.GEMINI_OCR_MAX_OUTPUT_TOKENS ?? 800);
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const DEFAULT_TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'whisper-1';
 const DEFAULT_AGENT_MODEL = process.env.GEMINI_AGENT_MODEL || 'gemini-3-pro-preview';
@@ -37,6 +35,10 @@ const DOWNLOAD_ROOT =
   process.env.GEMINI_OCR_DOWNLOAD_ROOT ||
   process.env.OPENAI_OCR_DOWNLOAD_ROOT ||
   path.join(process.cwd(), 'gallery-dl-runs');
+const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY || null;
+const MISTRAL_ORG_ID =
+  process.env.MISTRAL_ORG_ID || process.env.MISTRAL_ORGANIZATION || process.env.MISTRAL_ORG || null;
+const MISTRAL_OCR_MODEL = process.env.MISTRAL_OCR_MODEL || 'mistral-ocr-latest';
 const MAX_INLINE_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_WHISPER_FILE_BYTES = 25 * 1024 * 1024;
 const WHISPER_SEGMENT_SECONDS = clampInt(
@@ -138,18 +140,19 @@ async function main() {
     exitWithUsage('Provide --path or --url.');
   }
 
+  const geminiKey = GEMINI_API_KEY;
+  const mistralKey = MISTRAL_API_KEY;
+  if (!mistralKey) {
+    exitWithUsage('Falta MISTRAL_API_KEY para OCR con Mistral.');
+  }
   logRunInfo(options);
 
-  const geminiKey = GEMINI_API_KEY;
-  if (!geminiKey) {
-    exitWithUsage('Falta GEMINI_API_KEY/GOOGLE_API_KEY en el entorno (ej: archivo .env).');
-  }
   const openaiKey = OPENAI_API_KEY;
   if (!openaiKey) {
     console.warn('Falta OPENAI_API_KEY; no se podrán transcribir audios/videos con Whisper.');
   }
 
-  const geminiClient = new GoogleGenAI({ apiKey: geminiKey });
+  const geminiClient = geminiKey ? new GoogleGenAI({ apiKey: geminiKey }) : null;
   const openaiClient = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
   const mediaItems = [];
 
@@ -199,9 +202,7 @@ async function main() {
       let text = '';
       if (item.type === 'image') {
         text = await extractTextFromImage({
-          client: geminiClient,
-          filePath: absolutePath,
-          prompt: options.prompt
+          filePath: absolutePath
         });
       } else if (item.type === 'video' || item.type === 'audio') {
         text = await transcribeMedia({ openaiClient, filePath: absolutePath });
@@ -281,7 +282,9 @@ async function main() {
 
   let conversationHistory = [];
 
-  if (shouldRunAgent) {
+  if (shouldRunAgent && !geminiClient) {
+    console.warn('\n⚠️ Agent solicitado pero falta GEMINI_API_KEY/GOOGLE_API_KEY; se omite el paso de insights.');
+  } else if (shouldRunAgent) {
     const seedHistory = await runInsightAgent({
       client: geminiClient,
       results,
@@ -298,6 +301,7 @@ async function main() {
 
   if (
     shouldRunAgent &&
+    geminiClient &&
     supportsInteractivePrompts() &&
     !options.json &&
     !rawMode &&
@@ -313,37 +317,102 @@ async function main() {
   }
 }
 
-async function extractTextFromImage({ client, filePath, prompt }) {
-  const extension = path.extname(filePath).toLowerCase();
-  const mimeType = IMAGE_MIME_TYPES[extension];
-  if (!mimeType) {
-    throw new Error(`Tipo de imagen no soportado: ${filePath}`);
+async function extractTextFromImage({ filePath }) {
+  if (!MISTRAL_API_KEY) {
+    throw new Error('Falta MISTRAL_API_KEY para OCR con Mistral.');
   }
 
+  const extension = path.extname(filePath).toLowerCase();
+  const mimeType = IMAGE_MIME_TYPES[extension] || 'image/png';
   const buffer = await fs.readFile(filePath);
   if (buffer.length > MAX_INLINE_FILE_BYTES) {
-    throw new Error(`Imagen demasiado grande para inline (${Math.round(buffer.length / (1024 * 1024))}MB). Comprimila a <20MB.`);
+    throw new Error(
+      `Imagen demasiado grande para Mistral (${Math.round(buffer.length / (1024 * 1024))}MB). Comprimila a <20MB.`
+    );
   }
-  const inlineData = {
-    inlineData: { data: buffer.toString('base64'), mimeType }
-  };
-  debugLog('Calling vision model with file', filePath, 'bytes', buffer.length);
-  const response = await client.models.generateContent({
-    model: DEFAULT_VISION_MODEL,
-    contents: [
-      {
-        role: 'user',
-        parts: [{ text: prompt }, inlineData]
-      }
-    ],
-    config: {
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
-      mediaResolution: DEFAULT_MEDIA_RESOLUTION
-    }
-  });
 
-  const output = extractResponseText(response);
-  return output.trim();
+  const pdfBuffer = await imageToPdfBuffer(buffer, mimeType);
+  const dataUrl = `data:application/pdf;base64,${pdfBuffer.toString('base64')}`;
+
+  const headers = {
+    Authorization: `Bearer ${MISTRAL_API_KEY}`,
+    'Content-Type': 'application/json'
+  };
+  if (MISTRAL_ORG_ID) {
+    headers['Mistral-Organization'] = MISTRAL_ORG_ID;
+  }
+
+  const body = {
+    model: MISTRAL_OCR_MODEL,
+    document: { type: 'document_url', document_url: dataUrl }
+  };
+
+  debugLog('Calling Mistral OCR with file', filePath, 'bytes', buffer.length, 'pdfBytes', pdfBuffer.length);
+  const started = Date.now();
+  const response = await fetch('https://api.mistral.ai/v1/ocr', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body)
+  });
+  const raw = await response.text();
+  debugLog('Mistral OCR response', {
+    status: response.status,
+    statusText: response.statusText,
+    elapsed: Date.now() - started,
+    rawPreview: raw.slice(0, 200)
+  });
+  if (!response.ok) {
+    throw new Error(`Mistral OCR falló: ${response.status} ${response.statusText} body=${raw.slice(0, 400)}`);
+  }
+  let data = null;
+  try {
+    data = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Respuesta OCR no es JSON: ${error instanceof Error ? error.message : error}`);
+  }
+  const text = extractMistralOcrText(data);
+  if (!text) {
+    throw new Error('OCR de Mistral no devolvió texto.');
+  }
+  return text.trim();
+}
+
+async function imageToPdfBuffer(imageBuffer, mimeType) {
+  const pdfDoc = await PDFDocument.create();
+  let embedded;
+  if (mimeType === 'image/png' || mimeType === 'image/webp' || mimeType === 'image/gif') {
+    embedded = await pdfDoc.embedPng(imageBuffer);
+  } else {
+    embedded = await pdfDoc.embedJpg(imageBuffer);
+  }
+  const page = pdfDoc.addPage([embedded.width, embedded.height]);
+  page.drawImage(embedded, {
+    x: 0,
+    y: 0,
+    width: embedded.width,
+    height: embedded.height
+  });
+  return Buffer.from(await pdfDoc.save());
+}
+
+function extractMistralOcrText(data) {
+  const parts = [];
+  const pages = data?.result?.pages || data?.pages;
+  if (Array.isArray(pages)) {
+    for (const page of pages) {
+      const text = page?.text || page?.output_text || page?.content || page?.markdown;
+      if (text) {
+        parts.push(String(text));
+      }
+    }
+  }
+  if (data?.output_text) parts.push(String(data.output_text));
+  if (data?.text) parts.push(String(data.text));
+  if (data?.result?.text) parts.push(String(data.result.text));
+  return parts
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 async function transcribeMedia({ openaiClient, filePath }) {
@@ -1130,11 +1199,10 @@ function logRunInfo(options) {
   const modeLabel = options.mode || DEFAULT_MODE;
   const styleLabel = options.style || 'default';
   const inputLabel = options.url ? `url=${options.url}` : options.inputPath ? `path=${options.inputPath}` : 'n/a';
-
   console.log(`
 [twx] mode=${modeLabel} prompt=${path.basename(resolvedPrompt)} style=${styleLabel}`);
   console.log(
-    `[twx] vision=${DEFAULT_VISION_MODEL} agent=${DEFAULT_AGENT_MODEL} thinking=${DEFAULT_THINKING_LEVEL} media_res=${DEFAULT_MEDIA_RESOLUTION}`
+    `[twx] ocr=${MISTRAL_OCR_MODEL} (mistral) agent=${DEFAULT_AGENT_MODEL} thinking=${DEFAULT_THINKING_LEVEL} media_res=${DEFAULT_MEDIA_RESOLUTION}`
   );
   console.log(
     `[twx] whisper_model=${DEFAULT_TRANSCRIBE_MODEL} segment=${WHISPER_SEGMENT_SECONDS}s bitrate=${WHISPER_TARGET_BITRATE} sample_rate=${WHISPER_TARGET_SAMPLE_RATE}`
@@ -1290,7 +1358,6 @@ function parseArgs(argv) {
   const options = {
     inputPath: null,
     url: null,
-    prompt: process.env.GEMINI_OCR_PROMPT || process.env.OPENAI_OCR_PROMPT || DEFAULT_IMAGE_PROMPT,
     outputFile: process.env.GEMINI_OCR_OUTPUT_FILE || process.env.OPENAI_OCR_OUTPUT_FILE || null,
     json: false,
     recursive: true,
@@ -1311,8 +1378,6 @@ function parseArgs(argv) {
       options.inputPath = argv[++i];
     } else if (arg === '--url' || arg === '-u') {
       options.url = argv[++i];
-    } else if (arg === '--prompt') {
-      options.prompt = argv[++i];
     } else if (arg === '--output' || arg === '-o') {
       options.outputFile = argv[++i];
     } else if (arg === '--no-recursive') {
@@ -1378,7 +1443,6 @@ Usage: npm run ocr -- (--path <file-or-directory> | --url <tweet-or-video>) [opt
 Options:
   --path, -p <value>        Local media folder or file
   --url, -u <value>         Remote URL (Twitter/X via gallery-dl, YouTube via yt-dlp)
-  --prompt <value>          Custom OCR prompt for images
   --output, -o <file>       Save raw JSON to disk
   --json                    Print JSON to stdout
   --style <name>            Preset (musk, buk, raw, brief, etc.)
@@ -1395,12 +1459,13 @@ Options:
   --help, -h                Show this help
 
 Environment:
-  GEMINI_API_KEY / GOOGLE_API_KEY Required (loaded from .env)
+  GEMINI_API_KEY / GOOGLE_API_KEY Requerido para usar Gemini (solo agent)
   GEMINI_VISION_MODEL             Vision model (default: ${DEFAULT_VISION_MODEL})
-  GEMINI_OCR_PROMPT               Default OCR prompt
+  MISTRAL_API_KEY                 API key para OCR Mistral (obligatorio)
+  MISTRAL_ORG_ID                  Optional: header Mistral-Organization
+  MISTRAL_OCR_MODEL               Modelo OCR (default: ${MISTRAL_OCR_MODEL})
   GEMINI_AGENT_MODEL              Agent model (default: ${DEFAULT_AGENT_MODEL})
   GEMINI_AGENT_MAX_OUTPUT_TOKENS  Max agent output tokens (default: ${DEFAULT_AGENT_MAX_OUTPUT_TOKENS})
-  GEMINI_OCR_MAX_OUTPUT_TOKENS    Max tokens for OCR responses (default: ${MAX_OUTPUT_TOKENS})
   GEMINI_THINKING_LEVEL           Thinking depth (default: ${DEFAULT_THINKING_LEVEL})
   GEMINI_MEDIA_RESOLUTION         Vision fidelity (default: ${DEFAULT_MEDIA_RESOLUTION})
   GEMINI_OCR_DOWNLOAD_ROOT        Download directory (default: ${DOWNLOAD_ROOT})
