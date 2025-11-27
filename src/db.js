@@ -81,6 +81,16 @@ export async function listRuns({ limit = 10 } = {}) {
   return runs;
 }
 
+export async function getRunById(id) {
+  await connectToDatabase();
+  try {
+    const run = await RunModel.findById(id).lean().exec();
+    return run || null;
+  } catch {
+    return null;
+  }
+}
+
 export function buildAutoTitle({ results = [], fallback }) {
   const pick = results.find((r) => r.text) || results[0];
   const raw = pick?.text || fallback || '';
