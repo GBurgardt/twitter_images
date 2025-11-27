@@ -29,6 +29,15 @@ function main() {
     child.on('error', () => process.exit(1));
     return;
   }
+  if (target === 'show' || target === 'view' || target === '--show') {
+    const rest = args.slice(1);
+    const showId = rest[0] && !rest[0].startsWith('-') ? rest[0] : null;
+    const remainder = showId ? rest.slice(1) : rest;
+    const child = spawn(process.execPath, [SCRIPT_PATH, '--show', showId || '', ...remainder], { stdio: 'inherit' });
+    child.on('exit', (code) => process.exit(code ?? 0));
+    child.on('error', () => process.exit(1));
+    return;
+  }
 
   const maybeStyle = args[1] && !args[1].startsWith('-') ? args[1] : null;
   const restArgs = maybeStyle ? args.slice(2) : args.slice(1);

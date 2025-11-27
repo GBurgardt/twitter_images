@@ -12,7 +12,7 @@ import { GoogleGenAI } from '@google/genai';
 import OpenAI from 'openai';
 import ora from 'ora';
 import { PDFDocument } from 'pdf-lib';
-import { saveRun, listRuns, buildAutoTitle } from './db.js';
+import { saveRun, listRuns, buildAutoTitle, getRunById } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -139,6 +139,10 @@ async function main() {
   debugLog('Options:', options);
   if (options.list) {
     await handleListCommand(options);
+    return;
+  }
+  if (options.showId) {
+    await handleShowCommand(options.showId);
     return;
   }
   if (!options.inputPath && !options.url) {
@@ -1482,15 +1486,73 @@ async function handleListCommand(options) {
       return;
     }
     console.log(`\nÚltimas ${runs.length} ejecuciones:`);
-    for (const run of runs) {
+    runs.forEach((run, idx) => {
       const date = new Date(run.createdAt).toISOString();
       const title = run.title || '[sin título]';
       const source = run.source?.url || run.source?.path || '';
-      console.log(`- ${run._id} | ${date} | ${title} | ${source}`);
+      console.log(`${idx + 1}. ${run._id} | ${date} | ${title} | ${source}`);
+    });
+    if (supportsInteractivePrompts()) {
+      const input = await promptUser('\nSeleccioná # o id para ver el resumen (Enter para salir): ');
+      const trimmed = input.trim();
+      if (!trimmed) return;
+      let chosen = null;
+      if (/^\d+$/.test(trimmed)) {
+        const idx = Number(trimmed) - 1;
+        if (idx >= 0 && idx < runs.length) {
+          chosen = runs[idx]._id.toString();
+        }
+      } else {
+        chosen = trimmed;
+      }
+      if (chosen) {
+        await handleShowCommand(chosen);
+      } else {
+        console.log('Selección inválida.');
+      }
     }
   } catch (error) {
     console.error('No pude listar el historial:', error instanceof Error ? error.message : error);
     debugLog('List error details:', error);
+  }
+}
+
+async function handleShowCommand(id) {
+  try {
+    const run = await getRunById(id);
+    if (!run) {
+      console.log(`No encontré la ejecución con id ${id}`);
+      return;
+    }
+    printRun(run);
+  } catch (error) {
+    console.error('No pude mostrar la ejecución:', error instanceof Error ? error.message : error);
+    debugLog('Show error details:', error);
+  }
+}
+
+function printRun(run) {
+  const date = run.createdAt ? new Date(run.createdAt).toISOString() : '';
+  const source = run.source?.url || run.source?.path || '';
+  const title = run.title || '[sin título]';
+  console.log('\n— run —');
+  console.log(`id: ${run._id}`);
+  console.log(`fecha: ${date}`);
+  console.log(`título: ${title}`);
+  if (source) console.log(`origen: ${source}`);
+  if (run.finalResponse) {
+    printFinalResponse(run.finalResponse);
+  } else if (run.results?.length) {
+    const combined = run.results
+      .filter((r) => r.text)
+      .map((r) => `### ${r.file}\n${r.text}`)
+      .join('\n\n');
+    if (combined) {
+      console.log('\n—— transcript ——');
+      console.log(combined);
+    }
+  } else {
+    console.log('(sin contenido almacenado)');
   }
 }
 
@@ -1674,7 +1736,8 @@ function parseArgs(argv) {
     mode: DEFAULT_MODE,
     debug: false,
     list: false,
-    listLimit: 10
+    listLimit: 10,
+    showId: null
   };
 
   const positional = [];
@@ -1688,6 +1751,8 @@ function parseArgs(argv) {
       options.list = true;
     } else if (arg === '--limit') {
       options.listLimit = Number(argv[++i]) || options.listLimit;
+    } else if (arg === '--show') {
+      options.showId = argv[++i] || null;
     } else if (arg === '--output' || arg === '-o') {
       options.outputFile = argv[++i];
     } else if (arg === '--no-recursive') {
@@ -1722,6 +1787,8 @@ function parseArgs(argv) {
       const lower = arg.toLowerCase();
       if (lower === 'list' || lower === 'history') {
         options.list = true;
+      } else if (lower === 'show' || lower === 'view') {
+        options.showId = positional[1] || null;
       } else {
         positional.push(arg);
       }
@@ -1734,6 +1801,10 @@ function parseArgs(argv) {
       options.listLimit = Number(numeric);
     }
     return options;
+  }
+
+  if (options.showId && options.showId.startsWith('-')) {
+    options.showId = null;
   }
 
   if (positional.length > 0) {
@@ -1766,6 +1837,7 @@ Usage: npm run ocr -- (--path <file-or-directory> | --url <tweet-or-video>) [opt
 Options:
   list / --list             Listar ejecuciones previas (no requiere path/url)
   --limit <n>               Límite para --list (default: 10)
+  show <id> / --show <id>   Mostrar una ejecución guardada por id
   --path, -p <value>        Local media folder or file
   --url, -u <value>         Remote URL (Twitter/X via gallery-dl, YouTube via yt-dlp)
   --output, -o <file>       Save raw JSON to disk
