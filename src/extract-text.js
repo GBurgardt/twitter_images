@@ -207,7 +207,7 @@ async function main() {
       } else if (item.type === 'video' || item.type === 'audio') {
         text = await transcribeMedia({ openaiClient, filePath: absolutePath });
       } else if (item.type === 'text') {
-        text = await readPlainText(absolutePath);
+        text = await readPlainText(absolutePath, item.inlineText);
       } else {
         throw new Error(`Tipo de medio no soportado: ${relativePath}`);
       }
@@ -457,7 +457,10 @@ async function transcribeMedia({ openaiClient, filePath }) {
   return parts.join('\n\n');
 }
 
-async function readPlainText(filePath) {
+async function readPlainText(filePath, inlineText = null) {
+  if (inlineText) {
+    return String(inlineText).trim();
+  }
   const data = await fs.readFile(filePath, 'utf8');
   return data.trim();
 }
@@ -591,6 +594,23 @@ async function downloadWithGalleryDl(url) {
   await runGalleryDl(url, runDir);
   const items = await collectMedia(runDir, { recursive: true });
   debugLog('Files captured by gallery-dl:', items.map((item) => item.path));
+  if (!items.length) {
+    const textItems = await collectTextFromMetadata(runDir);
+    if (!textItems.length) {
+      const dumpTextItems = await collectTextFromDump(url);
+      textItems.push(...dumpTextItems);
+    }
+    if (!textItems.length) {
+      const fxTextItem = await collectTextFromFxApi(url);
+      if (fxTextItem) {
+        textItems.push(fxTextItem);
+      }
+    }
+    if (textItems.length) {
+      debugLog('Text-only tweet detected; creating virtual text item from metadata.');
+      items.push(...textItems);
+    }
+  }
   return { baseDir: runDir, items };
 }
 
@@ -621,6 +641,26 @@ async function runGalleryDl(url, baseDir) {
   await runExternalCommand('gallery-dl', args);
 }
 
+async function runGalleryDlDump(url) {
+  debugLog('Running gallery-dl dump for text extraction', url);
+  const args = ['--dump-json', url];
+  const stdout = await runCommandCaptureStdout('gallery-dl', args);
+  const lines = stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const objects = [];
+  for (const line of lines) {
+    try {
+      const obj = JSON.parse(line);
+      objects.push(obj);
+    } catch (error) {
+      debugLog('Failed to parse gallery-dl dump line:', error);
+    }
+  }
+  return objects;
+}
+
 async function runExternalCommand(command, args, { stdio = 'inherit' } = {}) {
   debugLog('Executing command:', command, args);
   await new Promise((resolve, reject) => {
@@ -638,6 +678,32 @@ async function runExternalCommand(command, args, { stdio = 'inherit' } = {}) {
         resolve();
       } else {
         reject(new Error(`${command} exited with status ${code}`));
+      }
+    });
+  });
+}
+
+async function runCommandCaptureStdout(command, args) {
+  debugLog('Executing command (capture stdout):', command, args);
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (error) => {
+      reject(error);
+    });
+    child.on('exit', (code) => {
+      if (code === 0) {
+        debugLog('Command finished OK:', command);
+        resolve(stdout);
+      } else {
+        reject(new Error(`${command} exited with status ${code}${stderr ? ` stderr=${stderr.slice(0, 400)}` : ''}`));
       }
     });
   });
@@ -663,6 +729,115 @@ async function collectMedia(targetPath, { recursive }) {
   debugLog('collectMedia', targetPath, '->', items.length, 'items');
 
   return items;
+}
+
+async function collectTextFromMetadata(baseDir) {
+  const items = [];
+  const queue = [baseDir];
+  let metaPath = null;
+  let metaData = null;
+
+  while (queue.length) {
+    const dir = queue.shift();
+    let entries = [];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      debugLog('collectTextFromMetadata readdir error:', error);
+      continue;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        queue.push(entryPath);
+        continue;
+      }
+      if (entry.name.endsWith('.info.json') || entry.name.endsWith('.json')) {
+        const meta = await readJSONIfExists(entryPath);
+        if (meta && typeof meta === 'object') {
+          metaPath = entryPath;
+          metaData = meta;
+          break;
+        }
+      }
+    }
+    if (metaData) {
+      break;
+    }
+  }
+
+  if (!metaData) {
+    return items;
+  }
+
+  const text = extractPrimaryText(metaData);
+  if (!text) {
+    return items;
+  }
+
+  items.push({
+    path: metaPath || path.join(baseDir, 'tweet.txt'),
+    type: 'text',
+    inlineText: text
+  });
+  return items;
+}
+
+async function collectTextFromDump(url) {
+  const items = [];
+  let dumpObjects = [];
+  try {
+    dumpObjects = await runGalleryDlDump(url);
+  } catch (error) {
+    debugLog('collectTextFromDump error:', error);
+    return items;
+  }
+  for (const obj of dumpObjects) {
+    const text = extractPrimaryText(obj);
+    if (text) {
+      items.push({
+        path: `${url}#text`,
+        type: 'text',
+        inlineText: text
+      });
+      break;
+    }
+  }
+  return items;
+}
+
+async function collectTextFromFxApi(rawUrl) {
+  const info = parseTweetInfo(rawUrl);
+  if (!info?.id) {
+    return null;
+  }
+  const apiUrl = info.user
+    ? `https://api.fxtwitter.com/${info.user}/status/${info.id}`
+    : `https://api.fxtwitter.com/i/status/${info.id}`;
+  try {
+    debugLog('Fetching text via fxtwitter API', apiUrl);
+    const response = await fetch(apiUrl, {
+      headers: { 'user-agent': 'twx-cli' }
+    });
+    if (!response.ok) {
+      debugLog('fxtwitter API failed', response.status, response.statusText);
+      return null;
+    }
+    const data = await response.json();
+    const text =
+      data?.tweet?.raw_text?.text ||
+      data?.tweet?.text ||
+      data?.tweet?.content ||
+      data?.raw_text?.text ||
+      data?.text;
+    if (typeof text === 'string' && text.trim()) {
+      return { path: `${apiUrl}#text`, type: 'text', inlineText: text.trim() };
+    }
+    return null;
+  } catch (error) {
+    debugLog('collectTextFromFxApi error:', error);
+    return null;
+  }
 }
 
 function getMediaType(filePath) {
@@ -1124,6 +1299,30 @@ function extractContextText(meta) {
   return Array.from(segments).join('\n');
 }
 
+function extractPrimaryText(meta) {
+  if (!meta || typeof meta !== 'object') {
+    return '';
+  }
+  const fields = [
+    'tweet_text',
+    'full_text',
+    'text',
+    'description',
+    'caption',
+    'title',
+    'summary',
+    'content',
+    'commentary'
+  ];
+  for (const key of fields) {
+    const value = meta[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return '';
+}
+
 function extractTag(xml, tag) {
   const pattern = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'i');
   const match = xml.match(pattern);
@@ -1227,6 +1426,26 @@ function printFinalResponse(finalResponse) {
   console.log(`\n${border}`);
   console.log(body);
   console.log(border);
+}
+
+function parseTweetInfo(rawUrl) {
+  try {
+    const { hostname, pathname } = new URL(rawUrl);
+    if (!TWITTER_HOSTS.has(hostname.toLowerCase())) {
+      return null;
+    }
+    const parts = pathname.split('/').filter(Boolean);
+    const statusIndex = parts.findIndex((part) => part === 'status' || part === 'statuses');
+    if (statusIndex === -1 || !parts[statusIndex + 1]) {
+      const id = parts.find((part) => /^\d{5,}$/.test(part));
+      return id ? { id, user: parts[0] || null } : null;
+    }
+    const id = parts[statusIndex + 1].split('?')[0];
+    const user = parts[statusIndex - 1] || null;
+    return { id, user };
+  } catch {
+    return null;
+  }
 }
 
 function supportsInteractivePrompts() {
