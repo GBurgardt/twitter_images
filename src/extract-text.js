@@ -12,6 +12,7 @@ import { GoogleGenAI } from '@google/genai';
 import OpenAI from 'openai';
 import ora from 'ora';
 import { PDFDocument } from 'pdf-lib';
+import { saveRun, listRuns, buildAutoTitle } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -136,6 +137,10 @@ async function main() {
     DEBUG_ENABLED = true;
   }
   debugLog('Options:', options);
+  if (options.list) {
+    await handleListCommand(options);
+    return;
+  }
   if (!options.inputPath && !options.url) {
     exitWithUsage('Provide --path or --url.');
   }
@@ -281,11 +286,12 @@ async function main() {
   debugLog('Should run agent?', shouldRunAgent);
 
   let conversationHistory = [];
+  let agentData = null;
 
   if (shouldRunAgent && !geminiClient) {
     console.warn('\n⚠️ Agent solicitado pero falta GEMINI_API_KEY/GOOGLE_API_KEY; se omite el paso de insights.');
   } else if (shouldRunAgent) {
-    const seedHistory = await runInsightAgent({
+    const { history, agentData: seedAgentData } = await runInsightAgent({
       client: geminiClient,
       results,
       style: options.style,
@@ -296,8 +302,18 @@ async function main() {
       agentPromptPath: resolveAgentPromptPath(options.mode, options.agentPromptPath),
       debug: DEBUG_ENABLED
     });
-    conversationHistory = seedHistory || [];
+    conversationHistory = history || [];
+    agentData = seedAgentData || null;
   }
+
+  await persistRun({
+    options,
+    results,
+    agentData,
+    promptPath: resolveAgentPromptPath(options.mode, options.agentPromptPath),
+    rawMode,
+    shouldRunAgent
+  });
 
   if (
     shouldRunAgent &&
@@ -892,10 +908,10 @@ async function runInsightAgent({
   });
 
   if (!result || !result.finalResponse) {
-    return [];
+    return { history: [], agentData: null };
   }
 
-  const { reflection, plan, finalResponse, xml, historyAppend = [] } = result;
+  const { reflection, plan, finalResponse, title, xml, historyAppend = [] } = result;
 
   printFinalResponse(finalResponse);
 
@@ -908,7 +924,10 @@ async function runInsightAgent({
     sessionLog
   });
 
-  return finalResponse ? historyAppend.slice() : [];
+  return {
+    history: finalResponse ? historyAppend.slice() : [],
+    agentData: { reflection, plan, finalResponse, title, xml, promptPath }
+  };
 }
 
 async function generateAgentResponse({
@@ -1002,10 +1021,15 @@ async function generateAgentResponse({
   const reflection = extractTag(xml, 'internal_reflection');
   const plan = extractTag(xml, 'action_plan');
   const finalResponse = extractTag(xml, 'final_response');
+  const title = extractTag(xml, 'title');
 
   if (!plan) {
     console.warn('Agent output missing <action_plan>. Use --debug to inspect.');
     debugLog('Missing <action_plan> in XML');
+  }
+  if (!title) {
+    console.warn('Agent output missing <title>.');
+    debugLog('Missing <title> in XML');
   }
   if (!finalResponse) {
     console.warn('Agent output missing <final_response>.');
@@ -1016,6 +1040,7 @@ async function generateAgentResponse({
     reflection,
     plan,
     finalResponse,
+    title,
     xml,
     historyAppend: [response.userContent, response.assistantContent].filter(Boolean)
   };
@@ -1043,7 +1068,10 @@ function buildAgentPayload({
     'Cada bloque de contexto está etiquetado como [MEDIA_CONTEXT]. Son citas textuales del tweet/caption/transcripción y pueden incluir lenguaje explícito; analizalos solo para derivar el significado y nunca los repitas literalmente.'
   );
   blocks.push(
-    'No omitas ningún tag del bloque <response>. Siempre devuelve <internal_reflection>, <action_plan> y <final_response>. Si falta información, completá igual con el mejor esfuerzo o marcá por qué no se puede, pero no dejes tags vacíos.'
+    'No omitas ningún tag del bloque <response>. Siempre devuelve <title>, <internal_reflection>, <action_plan> y <final_response>. Si falta información, completá igual con el mejor esfuerzo o marcá por qué no se puede, pero no dejes tags vacíos.'
+  );
+  blocks.push(
+    '<title> debe ser breve (5–12 palabras), en español, sin emojis ni comillas, y debe resumir el tema central para mostrar en listados.'
   );
   if (omitContext) {
     blocks.push('Contexto acotado: se omitieron captions para cumplir la política; trabajá solo con los textos listados arriba.');
@@ -1409,6 +1437,63 @@ function logRunInfo(options) {
   console.log(`[twx] source=${inputLabel}`);
 }
 
+async function persistRun({ options, results, agentData, promptPath, rawMode, shouldRunAgent }) {
+  try {
+    const doc = {
+      source: { url: options.url || null, path: options.inputPath || null },
+      mode: options.mode || DEFAULT_MODE,
+      style: options.style || 'default',
+      ocrModel: MISTRAL_OCR_MODEL,
+      agentModel: DEFAULT_AGENT_MODEL,
+      whisperModel: DEFAULT_TRANSCRIBE_MODEL,
+      mediaResolution: DEFAULT_MEDIA_RESOLUTION,
+      thinkingLevel: DEFAULT_THINKING_LEVEL,
+      promptName: promptPath ? path.basename(promptPath) : null,
+      title:
+        sanitizeTitle(agentData?.title) ||
+        buildAutoTitle({ results, fallback: options.url || options.inputPath || '' }),
+      reflection: agentData?.reflection || null,
+      actionPlan: agentData?.plan || null,
+      finalResponse: agentData?.finalResponse || null,
+      xml: agentData?.xml || null,
+      results,
+      metadata: {
+        rawMode: Boolean(rawMode),
+        agentRequested: Boolean(shouldRunAgent)
+      }
+    };
+    await saveRun(doc);
+    debugLog('Run persisted to Mongo.');
+  } catch (error) {
+    console.warn('⚠️ No se pudo guardar el historial en Mongo:', error instanceof Error ? error.message : error);
+    debugLog('Persist error details:', error);
+  }
+}
+
+async function handleListCommand(options) {
+  try {
+    const runs = await listRuns({ limit: options.listLimit });
+    if (!runs.length) {
+      console.log('\n(no hay ejecuciones guardadas)');
+      return;
+    }
+    if (options.json) {
+      console.log(JSON.stringify(runs, null, 2));
+      return;
+    }
+    console.log(`\nÚltimas ${runs.length} ejecuciones:`);
+    for (const run of runs) {
+      const date = new Date(run.createdAt).toISOString();
+      const title = run.title || '[sin título]';
+      const source = run.source?.url || run.source?.path || '';
+      console.log(`- ${run._id} | ${date} | ${title} | ${source}`);
+    }
+  } catch (error) {
+    console.error('No pude listar el historial:', error instanceof Error ? error.message : error);
+    debugLog('List error details:', error);
+  }
+}
+
 function stripXmlTags(text) {
   if (!text) {
     return '';
@@ -1587,7 +1672,9 @@ function parseArgs(argv) {
     sessionLog: process.env.TWX_SESSION_LOG || null,
     agentPromptPath: null,
     mode: DEFAULT_MODE,
-    debug: false
+    debug: false,
+    list: false,
+    listLimit: 10
   };
 
   const positional = [];
@@ -1597,6 +1684,10 @@ function parseArgs(argv) {
       options.inputPath = argv[++i];
     } else if (arg === '--url' || arg === '-u') {
       options.url = argv[++i];
+    } else if (arg === '--list' || arg === '-l') {
+      options.list = true;
+    } else if (arg === '--limit') {
+      options.listLimit = Number(argv[++i]) || options.listLimit;
     } else if (arg === '--output' || arg === '-o') {
       options.outputFile = argv[++i];
     } else if (arg === '--no-recursive') {
@@ -1628,8 +1719,21 @@ function parseArgs(argv) {
     } else if (arg.startsWith('-')) {
       exitWithUsage(`Unknown option: ${arg}`);
     } else {
-      positional.push(arg);
+      const lower = arg.toLowerCase();
+      if (lower === 'list' || lower === 'history') {
+        options.list = true;
+      } else {
+        positional.push(arg);
+      }
     }
+  }
+
+  if (options.list) {
+    const numeric = positional.find((value) => /^\d+$/.test(value));
+    if (numeric) {
+      options.listLimit = Number(numeric);
+    }
+    return options;
   }
 
   if (positional.length > 0) {
@@ -1660,6 +1764,8 @@ function exitWithUsage(message, exitCode = 1) {
 Usage: npm run ocr -- (--path <file-or-directory> | --url <tweet-or-video>) [options]
 
 Options:
+  list / --list             Listar ejecuciones previas (no requiere path/url)
+  --limit <n>               Límite para --list (default: 10)
   --path, -p <value>        Local media folder or file
   --url, -u <value>         Remote URL (Twitter/X via gallery-dl, YouTube via yt-dlp)
   --output, -o <file>       Save raw JSON to disk
@@ -1683,6 +1789,7 @@ Environment:
   MISTRAL_API_KEY                 API key para OCR Mistral (obligatorio)
   MISTRAL_ORG_ID                  Optional: header Mistral-Organization
   MISTRAL_OCR_MODEL               Modelo OCR (default: ${MISTRAL_OCR_MODEL})
+  MONGODB_URL / MONGO_URL         URI MongoDB (default: mongodb://localhost:27017/twx_history)
   GEMINI_AGENT_MODEL              Agent model (default: ${DEFAULT_AGENT_MODEL})
   GEMINI_AGENT_MAX_OUTPUT_TOKENS  Max agent output tokens (default: ${DEFAULT_AGENT_MAX_OUTPUT_TOKENS})
   GEMINI_THINKING_LEVEL           Thinking depth (default: ${DEFAULT_THINKING_LEVEL})
@@ -1707,3 +1814,14 @@ main().catch((error) => {
   console.error(error);
   process.exit(1);
 });
+function sanitizeTitle(title) {
+  if (!title) return '';
+  return title
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 140);
+}
