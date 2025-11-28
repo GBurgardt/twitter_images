@@ -947,6 +947,13 @@ async function generateAgentResponse({
 }) {
   let response = null;
   let omitContext = false;
+  const safetySettings = [
+    { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' }
+  ];
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const payload = buildAgentPayload({
@@ -976,6 +983,7 @@ async function generateAgentResponse({
         systemInstruction: {
           parts: [{ text: promptSource }]
         },
+        safetySettings,
         config: {
           maxOutputTokens: DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
           temperature: 1,
