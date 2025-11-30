@@ -59,7 +59,7 @@ Todos los planes y respuestas salen en español (tono directo) para que puedas c
 
 ### Chat inline
 
-Después del primer resumen Musk, el CLI queda abierto como chat: respondé en el prompt `ask elon ›`, seguí conversando y salí con Enter o `:q`. Cada turno mantiene el historial (XML) para que la voz conserve contexto.
+Después del primer resumen Musk, el CLI queda abierto como chat: escribí en `ask elon ›` con saltos de línea usando Enter; enviá con `/send` y salí con `/q` o `:q`. Cada turno mantiene el historial (XML) para que la voz conserve contexto.
 
 ### Feedback visual
 

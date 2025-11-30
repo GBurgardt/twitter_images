@@ -1617,6 +1617,61 @@ async function promptUser(message) {
   return answer.trim();
 }
 
+async function promptChatMultiline(promptLabel) {
+  if (!supportsInteractivePrompts()) {
+    return '';
+  }
+
+  return await new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      historySize: 0,
+      terminal: true
+    });
+    const lines = [];
+    let completed = false;
+
+    const finish = (value) => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      rl.close();
+      resolve(value);
+    };
+
+    rl.setPrompt(promptLabel);
+    rl.prompt();
+
+    rl.on('line', (line) => {
+      const lower = line.trim().toLowerCase();
+      if (lower === '/send') {
+        finish(lines.join('\n').trim());
+        return;
+      }
+      if (lower === ':q' || lower === '/q') {
+        finish(null);
+        return;
+      }
+      lines.push(line);
+      rl.setPrompt(lines.length ? '… ' : promptLabel);
+      rl.prompt();
+    });
+
+    rl.on('close', () => {
+      if (completed) {
+        return;
+      }
+      if (!lines.length) {
+        resolve(null);
+        return;
+      }
+      resolve(lines.join('\n').trim());
+    });
+  });
+}
+
 function clearScreen() {
   if (!supportsInteractivePrompts()) {
     return;
@@ -1682,12 +1737,12 @@ async function startConversationLoop({ client, results, options, conversationHis
   const normalizedStyle = normalizeStyle(options.style);
   const preset = normalizedStyle && STYLE_PRESETS[normalizedStyle];
 
-  console.log('\nchat mode · press Enter or :q to exit');
+  console.log('\nchat mode · Enter agrega saltos de línea, /send envía, /q sale');
 
   while (true) {
-    const input = await promptUser('\nask elon › ');
+    const input = await promptChatMultiline('ask elon › ');
     const trimmed = input?.trim();
-    if (!trimmed || trimmed.toLowerCase() === ':q') {
+    if (!trimmed) {
       console.log('\nchat closed.');
       break;
     }
