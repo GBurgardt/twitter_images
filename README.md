@@ -66,7 +66,13 @@ Todos los planes y respuestas salen en español (tono directo) para que puedas c
 
 ### Chat inline
 
-Después del primer resumen Musk, el CLI queda abierto como chat: escribí en `ask elon ›` con saltos de línea usando Enter; enviá con `/send` y salí con `/q` o `:q`. Cada turno mantiene el historial (XML) para que la voz conserve contexto.
+Después del primer resumen Musk, el CLI queda abierto como chat: escribí en `ask elon ›` con saltos de línea usando Enter; enviá con `/send` y salí con `/q` o `:q`. Cada turno mantiene el historial (XML) para que la voz conserve contexto. Si abrís un run viejo con `twx show <id>`, podés seguir chateando sobre ese resultado con el mismo flujo.
+
+### Historial elegante
+
+- `twx list` muestra las últimas ejecuciones con un selector de flechas y búsqueda (autocomplete). Flechas arriba/abajo y Enter para abrir; ESC/Enter vacío para salir. También podés tipear texto para filtrar por título/url/resumen.
+- Si querés ver más de 10, usá `twx list --limit 30` o elegí “Cargar más…” dentro del selector.
+- `twx show <id>` abre el run y permite chatear sobre él.
 
 ### Feedback visual
 

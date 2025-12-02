@@ -9,10 +9,13 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline/promises';
 import { GoogleGenAI } from '@google/genai';
+import Enquirer from 'enquirer';
 import OpenAI from 'openai';
 import ora from 'ora';
 import { PDFDocument } from 'pdf-lib';
 import { saveRun, listRuns, buildAutoTitle, getRunById } from './db.js';
+
+const { AutoComplete } = Enquirer;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -1595,40 +1598,35 @@ async function persistRun({ options, results, agentData, promptPath, rawMode, sh
 
 async function handleListCommand(options) {
   try {
-    const runs = await listRuns({ limit: options.listLimit });
-    if (!runs.length) {
-      console.log('\n(no hay ejecuciones guardadas)');
-      return;
-    }
+    let limit = Math.max(1, options.listLimit);
     if (options.json) {
+      const runs = await listRuns({ limit });
+      if (!runs.length) {
+        console.log('\n(no hay ejecuciones guardadas)');
+        return;
+      }
       console.log(JSON.stringify(runs, null, 2));
       return;
     }
-    console.log(`\nÚltimas ${runs.length} ejecuciones:`);
-    runs.forEach((run, idx) => {
-      const date = new Date(run.createdAt).toISOString();
-      const title = run.title || '[sin título]';
-      const source = run.source?.url || run.source?.path || '';
-      console.log(`${idx + 1}. ${run._id} | ${date} | ${title} | ${source}`);
-    });
-    if (supportsInteractivePrompts()) {
-      const input = await promptUser('\nSeleccioná # o id para ver el resumen (Enter para salir): ');
-      const trimmed = input.trim();
-      if (!trimmed) return;
-      let chosen = null;
-      if (/^\d+$/.test(trimmed)) {
-        const idx = Number(trimmed) - 1;
-        if (idx >= 0 && idx < runs.length) {
-          chosen = runs[idx]._id.toString();
+
+    while (true) {
+      const runs = await listRuns({ limit });
+      if (!runs.length) {
+        console.log('\n(no hay ejecuciones guardadas)');
+        return;
+      }
+      const selection = await renderInteractiveList(runs, { allowMore: true, moreStep: options.listLimit });
+      if (!selection) return;
+      if (selection === '__more__') {
+        if (limit >= 100) {
+          console.log('\n(se muestran 100 items; no hay más)');
+          continue;
         }
-      } else {
-        chosen = trimmed;
+        limit = Math.min(100, limit + Math.max(5, options.listLimit || 10));
+        continue;
       }
-      if (chosen) {
-        await handleShowCommand(chosen);
-      } else {
-        console.log('Selección inválida.');
-      }
+      await handleShowCommand(selection);
+      break;
     }
   } catch (error) {
     console.error('No pude listar el historial:', error instanceof Error ? error.message : error);
@@ -1644,6 +1642,29 @@ async function handleShowCommand(id) {
       return;
     }
     printRun(run);
+
+    const canChat = supportsInteractivePrompts() && GEMINI_API_KEY && (run.finalResponse || (run.results || []).some((r) => r.text));
+    if (!canChat) {
+      return;
+    }
+
+    const geminiClient = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+    const conversationHistory = [];
+    if (run.finalResponse) {
+      conversationHistory.push({ role: 'assistant', parts: [{ text: run.finalResponse }] });
+    }
+    const promptPath = resolveAgentPromptPath(run.mode || DEFAULT_MODE, null);
+    const chatOptions = {
+      style: run.style && run.style !== 'default' ? run.style : 'musk',
+      sessionLog: null
+    };
+    await startConversationLoop({
+      client: geminiClient,
+      results: run.results || [],
+      options: chatOptions,
+      conversationHistory,
+      agentPromptPath: promptPath
+    });
   } catch (error) {
     console.error('No pude mostrar la ejecución:', error instanceof Error ? error.message : error);
     debugLog('Show error details:', error);
@@ -1675,11 +1696,84 @@ function printRun(run) {
   }
 }
 
+async function renderInteractiveList(runs, { allowMore = false, moreStep = 10 } = {}) {
+  if (!supportsInteractivePrompts()) {
+    return null;
+  }
+
+  console.log(`\nÚltimas ${runs.length} ejecuciones (↑/↓ para navegar, escribe para filtrar, Enter para abrir, ESC para salir)`);
+
+  const choices = runs.map((run) => {
+    const date = run.createdAt
+      ? new Date(run.createdAt).toISOString().replace('T', ' ').replace('Z', '').replace('.000', '')
+      : '';
+    const title = run.title || '[sin título]';
+    const preview = stripXmlTags(run.finalResponse || '').replace(/\s+/g, ' ').trim();
+    const label = truncateMiddle(`${title} · ${date}`, 90);
+    const secondary = truncateMiddle(preview, 70);
+    return {
+      name: label,
+      message: secondary ? `${label}\n   ${secondary}` : label,
+      value: run._id.toString()
+    };
+  });
+
+  if (allowMore) {
+    choices.push({
+      name: 'Cargar más…',
+      value: '__more__',
+      message: `Cargar ${moreStep || 10} más…`
+    });
+  }
+
+  choices.push({ name: 'Salir', value: null, message: 'Salir' });
+
+  try {
+    const visibleLimit = Math.min(Math.max(8, choices.length), 20);
+    const prompt = new AutoComplete({
+      name: 'run',
+      message: 'Elegí un run (flechas), buscá por título/resumen o Enter para salir',
+      limit: visibleLimit,
+      choices
+    });
+    const selection = await prompt.run();
+    return selection || null;
+  } catch (error) {
+    debugLog('Interactive list failed, falling back to manual input', error);
+    const input = await promptUser('\nSeleccioná # o id para ver el resumen (Enter para salir): ');
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    if (allowMore && trimmed.toLowerCase() === 'm') {
+      return '__more__';
+    }
+    let chosen = null;
+    if (/^\d+$/.test(trimmed)) {
+      const idx = Number(trimmed) - 1;
+      if (idx >= 0 && idx < runs.length) {
+        chosen = runs[idx]._id.toString();
+      }
+    } else {
+      chosen = trimmed;
+    }
+    if (chosen) {
+      return chosen;
+    }
+    console.log('Selección inválida.');
+    return null;
+  }
+}
+
 function stripXmlTags(text) {
   if (!text) {
     return '';
   }
   return text.replace(/<[^>]+>/g, '');
+}
+
+function truncateMiddle(text, max = 120) {
+  if (!text || text.length <= max) return text || '';
+  const half = Math.floor((max - 3) / 2);
+  return `${text.slice(0, half)}...${text.slice(-half)}`;
 }
 
 function printFinalResponse(finalResponse) {
@@ -1842,9 +1936,6 @@ async function handleReflectionOutput({
 async function startConversationLoop({ client, results, options, conversationHistory, agentPromptPath }) {
   const promptPath = agentPromptPath ? path.resolve(agentPromptPath) : AGENT_PROMPT_PATH;
   const promptSource = await fs.readFile(promptPath, 'utf8');
-  if (!conversationHistory.length) {
-    return;
-  }
   const normalizedStyle = normalizeStyle(options.style);
   const preset = normalizedStyle && STYLE_PRESETS[normalizedStyle];
 
@@ -1872,14 +1963,15 @@ async function startConversationLoop({ client, results, options, conversationHis
         showSpacer: false
       });
     } catch (error) {
-      console.error('\nagent failed during chat turn. aborting conversation.');
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error(`\nagent failed durante el turno: ${reason}`);
       debugLog('Chat loop agent error:', error);
-      break;
+      continue;
     }
 
     if (!responseData || !responseData.finalResponse) {
-      console.warn('Agent did not return a reply.');
-      break;
+      console.warn('Agent no devolvió respuesta. Probá de nuevo.');
+      continue;
     }
 
     console.log('');
