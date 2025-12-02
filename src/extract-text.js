@@ -53,6 +53,16 @@ const WHISPER_TARGET_SAMPLE_RATE = process.env.WHISPER_SAMPLE_RATE || '16000';
 const SPINNER_ENABLED = process.stdout.isTTY && process.env.TWX_NO_SPINNER !== '1';
 let DEBUG_ENABLED = process.env.TWX_DEBUG === '1';
 const DEFAULT_MODE = (process.env.TWX_MODE || 'standard').toLowerCase();
+const CLIP_OPTION_KEYS = new Set(['--clip', '--range', '--segment']);
+const CLIP_START_KEYS = new Set([
+  '--start',
+  '--from',
+  '--clip-start',
+  '--clip_start',
+  '--first-time',
+  '--first_time'
+]);
+const CLIP_END_KEYS = new Set(['--end', '--to', '--clip-end', '--clip_end', '--last-time', '--last_time']);
 
 function debugLog(...args) {
   if (DEBUG_ENABLED) {
@@ -66,6 +76,50 @@ function clampInt(value, min, max, fallback) {
     return Math.min(Math.max(Math.round(num), min), max);
   }
   return fallback;
+}
+
+function parseTimecode(value) {
+  if (!value && value !== 0) {
+    return null;
+  }
+  const trimmed = String(value).trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    return Number(trimmed);
+  }
+  const parts = trimmed.split(':').map((p) => p.trim()).filter(Boolean);
+  if (!parts.length || parts.some((p) => Number.isNaN(Number(p)))) {
+    return null;
+  }
+  const nums = parts.map((p) => Number(p));
+  let seconds = 0;
+  if (nums.length === 3) {
+    seconds = nums[0] * 3600 + nums[1] * 60 + nums[2];
+  } else if (nums.length === 2) {
+    seconds = nums[0] * 60 + nums[1];
+  } else if (nums.length === 1) {
+    seconds = nums[0];
+  } else {
+    return null;
+  }
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return null;
+  }
+  return seconds;
+}
+
+function formatTimecode(seconds) {
+  if (seconds == null || Number.isNaN(seconds)) {
+    return null;
+  }
+  const total = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const hh = h > 0 ? String(h).padStart(2, '0') + ':' : '';
+  return `${hh}${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 const IMAGE_MIME_TYPES = {
@@ -137,6 +191,12 @@ async function main() {
     DEBUG_ENABLED = true;
   }
   debugLog('Options:', options);
+
+  if (options.clipRange && !options.list && !options.showId && !options.json) {
+    const startLabel = formatTimecode(options.clipRange.start ?? 0);
+    const endLabel = options.clipRange.end != null ? formatTimecode(options.clipRange.end) : 'fin';
+    console.log(`\nClip de audio: ${startLabel} → ${endLabel}`);
+  }
   if (options.list) {
     await handleListCommand(options);
     return;
@@ -214,7 +274,7 @@ async function main() {
           filePath: absolutePath
         });
       } else if (item.type === 'video' || item.type === 'audio') {
-        text = await transcribeMedia({ openaiClient, filePath: absolutePath });
+        text = await transcribeMedia({ openaiClient, filePath: absolutePath, clipRange: options.clipRange });
       } else if (item.type === 'text') {
         text = await readPlainText(absolutePath, item.inlineText);
       } else {
@@ -435,14 +495,15 @@ function extractMistralOcrText(data) {
     .join('\n\n');
 }
 
-async function transcribeMedia({ openaiClient, filePath }) {
+async function transcribeMedia({ openaiClient, filePath, clipRange = null }) {
   if (!openaiClient) {
     throw new Error('Falta OPENAI_API_KEY para transcribir audio/video con Whisper.');
   }
-  const prepared = await prepareAudioForWhisper(filePath);
+  const clipped = await clipMediaSegment(filePath, clipRange);
+  const prepared = await prepareAudioForWhisper(clipped.path);
   const segmented = await splitAudioIfNeeded(prepared.path);
 
-  const cleanupTasks = [prepared.cleanup, segmented.cleanup].filter(Boolean);
+  const cleanupTasks = [clipped.cleanup, prepared.cleanup, segmented.cleanup].filter(Boolean);
   const parts = [];
 
   try {
@@ -522,6 +583,56 @@ async function transcodeForWhisper(filePath) {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     throw new Error(
       'ffmpeg es requerido para comprimir medios >25MB antes de Whisper. Instalalo o comprimí el archivo manualmente.'
+    );
+  }
+
+  return {
+    path: targetPath,
+    cleanup: () => fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  };
+}
+
+async function clipMediaSegment(filePath, clipRange) {
+  if (!clipRange || (clipRange.start == null && clipRange.end == null)) {
+    return { path: filePath, cleanup: null };
+  }
+
+  const start = Math.max(0, clipRange.start ?? 0);
+  const end = clipRange.end != null ? Math.max(clipRange.end, 0) : null;
+  const duration = end != null ? Math.max(0, end - start) : null;
+
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'twx-clip-'));
+  const basename = path.basename(filePath, path.extname(filePath));
+  const targetPath = path.join(tmpDir, `${basename}-clip.m4a`);
+  const args = [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-y',
+    '-ss',
+    String(start),
+    '-i',
+    filePath,
+    '-vn',
+    '-ac',
+    '1',
+    '-ar',
+    WHISPER_TARGET_SAMPLE_RATE,
+    '-b:a',
+    WHISPER_TARGET_BITRATE
+  ];
+
+  if (duration && duration > 0) {
+    args.push('-t', String(duration));
+  }
+  args.push(targetPath);
+
+  try {
+    await runExternalCommand('ffmpeg', args, { stdio: 'inherit' });
+  } catch (error) {
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    throw new Error(
+      'ffmpeg es requerido para recortar audio/video antes de Whisper. Instalalo o quitá los flags de clip.'
     );
   }
 
@@ -1800,12 +1911,56 @@ function parseArgs(argv) {
     debug: false,
     list: false,
     listLimit: 10,
-    showId: null
+    showId: null,
+    clipStart: null,
+    clipEnd: null,
+    clipRange: null
+  };
+
+  const parseClipSeconds = (label, raw) => {
+    const seconds = parseTimecode(raw);
+    if (seconds == null) {
+      exitWithUsage(`Tiempo inválido para ${label}: ${raw}`);
+    }
+    return seconds;
+  };
+
+  const applyClipRangeValue = (raw) => {
+    if (!raw) {
+      exitWithUsage('Falta el rango para --clip (ej: 0:33:36-0:42:59).');
+    }
+    const [startRaw, endRaw] = raw.split(/[-–]/);
+    options.clipStart = parseClipSeconds('inicio de clip', startRaw);
+    if (endRaw !== undefined && endRaw !== '') {
+      options.clipEnd = parseClipSeconds('fin de clip', endRaw);
+    }
+  };
+
+  const maybeAttachedClip = (token) => {
+    const allKeys = [...CLIP_OPTION_KEYS, ...CLIP_START_KEYS, ...CLIP_END_KEYS];
+    for (const key of allKeys) {
+      if (token.startsWith(`${key}:`) || token.startsWith(`${key}=`)) {
+        return { key, value: token.slice(key.length + 1) };
+      }
+    }
+    return null;
   };
 
   const positional = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    const attached = maybeAttachedClip(arg);
+    if (attached) {
+      if (CLIP_OPTION_KEYS.has(attached.key)) {
+        applyClipRangeValue(attached.value);
+      } else if (CLIP_START_KEYS.has(attached.key)) {
+        options.clipStart = parseClipSeconds('inicio de clip', attached.value);
+      } else if (CLIP_END_KEYS.has(attached.key)) {
+        options.clipEnd = parseClipSeconds('fin de clip', attached.value);
+      }
+      continue;
+    }
+
     if (arg === '--path' || arg === '-p') {
       options.inputPath = argv[++i];
     } else if (arg === '--url' || arg === '-u') {
@@ -1842,6 +1997,14 @@ function parseArgs(argv) {
       options.mode = 'top';
     } else if (arg === '--debug') {
       options.debug = true;
+    } else if (CLIP_OPTION_KEYS.has(arg)) {
+      applyClipRangeValue(argv[++i]);
+    } else if (CLIP_START_KEYS.has(arg)) {
+      options.clipStart = parseClipSeconds('inicio de clip', argv[++i]);
+    } else if (CLIP_END_KEYS.has(arg)) {
+      options.clipEnd = parseClipSeconds('fin de clip', argv[++i]);
+    } else if (arg === '--video') {
+      // compat: hint sin efecto
     } else if (arg === '--help' || arg === '-h') {
       exitWithUsage(null, 0);
     } else if (arg.startsWith('-')) {
@@ -1856,6 +2019,15 @@ function parseArgs(argv) {
         positional.push(arg);
       }
     }
+  }
+
+  if (options.clipStart != null || options.clipEnd != null) {
+    const start = options.clipStart ?? 0;
+    const end = options.clipEnd;
+    if (end != null && end <= start) {
+      exitWithUsage('El fin del clip debe ser mayor al inicio.');
+    }
+    options.clipRange = { start, end: end ?? null };
   }
 
   if (options.list) {
@@ -1911,6 +2083,9 @@ Options:
   --mode <standard|long>    Usa el prompt largo sin afectar el modo estándar
   --long / --longform       Atajo para --mode long
   --top / --top5            Atajo para --mode top (top 5 insights)
+  --clip <a-b>              Transcribir solo el fragmento (hh:mm:ss). Ej: 0:33:36-0:42:59
+  --start <time>            Inicio del clip (alias: --from)
+  --end <time>              Fin del clip (alias: --to)
   --show-reflection         Print the internal reflection inline
   --session-log <file>      Where to store the XML response (default: ${DEFAULT_SESSION_LOG})
   --agent-prompt <file>     Override the agent prompt template

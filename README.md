@@ -5,10 +5,11 @@ Turn any tweet (images, videos, text) or YouTube clip into usable text and an ac
 ## Requirements
 
 1. Node.js 18+
-2. Google Gemini API key (`.env` with `GEMINI_API_KEY=...`) para el agente/OCR
-3. OpenAI API key (`.env` con `OPENAI_API_KEY=...`) para transcribir audio/video con Whisper
-4. [gallery-dl](https://github.com/mikf/gallery-dl) on your `PATH` (tweet/thread downloads)
-5. [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org/) on your `PATH` (YouTube audio extraction)
+2. Google Gemini API key (`.env` with `GEMINI_API_KEY=...`) para el agente
+3. Mistral API key (`.env` con `MISTRAL_API_KEY=...`) para OCR
+4. OpenAI API key (`.env` con `OPENAI_API_KEY=...`) para transcribir audio/video con Whisper
+5. [gallery-dl](https://github.com/mikf/gallery-dl) on your `PATH` (tweet/thread downloads)
+6. [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org/) on your `PATH` (YouTube audio extraction)
 
 Install JS deps and set up your key:
 
@@ -38,6 +39,12 @@ Examples:
 - `twx https://youtu.be/clip buk` → pulls the YouTube audio via `yt-dlp`, transcribes with Whisper, and replies like Bukowski.
 - `twx ./gallery-dl/twitter/thread raw` → reuse an existing folder and just dump the raw transcript.
 - `twx https://x.com/... tell "explain how to pitch this in 30s"` → Musk tone + instrucción inline sin recordar `--style-text`.
+
+Recortar un tramo de audio/video:
+
+- `twx https://x.com/... --clip 0:33:36-0:42:59` → transcribe solo ese rango.
+- Alternativa: `--start 0:33:36 --end 0:42:59` (omití `--end` si querés hasta el final).
+- `--video` no es necesario; la detección de medio es automática.
 
 `style` is optional and defaults to `musk`. Aliases you can use as the second word:
 
