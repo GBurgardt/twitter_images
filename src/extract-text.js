@@ -205,7 +205,7 @@ async function main() {
     return;
   }
   if (options.showId) {
-    await handleShowCommand(options.showId);
+    await handleShowCommand(options.showId, { showTranscript: options.showTranscript });
     return;
   }
   if (!options.inputPath && !options.url) {
@@ -1625,7 +1625,7 @@ async function handleListCommand(options) {
         limit = Math.min(100, limit + Math.max(5, options.listLimit || 10));
         continue;
       }
-      await handleShowCommand(selection);
+      await handleShowCommand(selection, { showTranscript: options.showTranscript });
       break;
     }
   } catch (error) {
@@ -1634,14 +1634,14 @@ async function handleListCommand(options) {
   }
 }
 
-async function handleShowCommand(id) {
+async function handleShowCommand(id, { showTranscript = false } = {}) {
   try {
     const run = await getRunById(id);
     if (!run) {
       console.log(`No encontré la ejecución con id ${id}`);
       return;
     }
-    printRun(run);
+    await printRun(run, { showTranscript });
 
     const canChat = supportsInteractivePrompts() && GEMINI_API_KEY && (run.finalResponse || (run.results || []).some((r) => r.text));
     if (!canChat) {
@@ -1671,7 +1671,7 @@ async function handleShowCommand(id) {
   }
 }
 
-function printRun(run) {
+async function printRun(run, { showTranscript = false } = {}) {
   const date = run.createdAt ? new Date(run.createdAt).toISOString() : '';
   const source = run.source?.url || run.source?.path || '';
   const title = run.title || '[sin título]';
@@ -1682,17 +1682,28 @@ function printRun(run) {
   if (source) console.log(`origen: ${source}`);
   if (run.finalResponse) {
     printFinalResponse(run.finalResponse);
-  } else if (run.results?.length) {
+  } else if (!run.results?.length) {
+    console.log('(sin contenido almacenado)');
+  }
+
+  const hasTranscript = Array.isArray(run.results) && run.results.some((r) => r.text);
+  const shouldShow =
+    showTranscript ||
+    (!run.finalResponse &&
+      hasTranscript) ||
+    (hasTranscript && supportsInteractivePrompts()
+      ? (await promptUser('\n¿Mostrar transcripciones crudas? [Y/n]: ')).toLowerCase() !== 'n'
+      : false);
+
+  if (hasTranscript && shouldShow) {
     const combined = run.results
       .filter((r) => r.text)
-      .map((r) => `### ${r.file}\n${r.text}`)
+      .map((r) => `### ${r.file || r.type}\n${r.text}`)
       .join('\n\n');
     if (combined) {
       console.log('\n—— transcript ——');
       console.log(combined);
     }
-  } else {
-    console.log('(sin contenido almacenado)');
   }
 }
 
@@ -2006,7 +2017,8 @@ function parseArgs(argv) {
     showId: null,
     clipStart: null,
     clipEnd: null,
-    clipRange: null
+    clipRange: null,
+    showTranscript: false
   };
 
   const parseClipSeconds = (label, raw) => {
@@ -2089,6 +2101,8 @@ function parseArgs(argv) {
       options.mode = 'top';
     } else if (arg === '--debug') {
       options.debug = true;
+    } else if (arg === '--transcript' || arg === '--show-transcript' || arg === '--show-transcripts') {
+      options.showTranscript = true;
     } else if (CLIP_OPTION_KEYS.has(arg)) {
       applyClipRangeValue(argv[++i]);
     } else if (CLIP_START_KEYS.has(arg)) {
@@ -2178,6 +2192,7 @@ Options:
   --clip <a-b>              Transcribir solo el fragmento (hh:mm:ss). Ej: 0:33:36-0:42:59
   --start <time>            Inicio del clip (alias: --from)
   --end <time>              Fin del clip (alias: --to)
+  --transcript              Mostrar también las transcripciones crudas guardadas
   --show-reflection         Print the internal reflection inline
   --session-log <file>      Where to store the XML response (default: ${DEFAULT_SESSION_LOG})
   --agent-prompt <file>     Override the agent prompt template
