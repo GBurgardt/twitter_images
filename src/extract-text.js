@@ -1,4 +1,10 @@
 #!/usr/bin/env node
+/**
+ * twx - Twitter/X Media Insight CLI
+ *
+ * Experiencia rediseñada: silencio elegante, output limpio, errores humanos.
+ */
+
 import dotenv from 'dotenv';
 import fs from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
@@ -7,15 +13,15 @@ import process from 'node:process';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import readline from 'node:readline/promises';
 import { GoogleGenAI } from '@google/genai';
-import Enquirer from 'enquirer';
 import OpenAI from 'openai';
-import ora from 'ora';
 import { PDFDocument } from 'pdf-lib';
-import { saveRun, listRuns, buildAutoTitle, getRunById } from './db.js';
 
-const { AutoComplete } = Enquirer;
+// Módulos propios
+import { loadConfig, isConfigured, runSetup, showConfig, resetConfig } from './config.js';
+import * as ui from './ui.js';
+import * as errors from './errors.js';
+import { saveRun, listRuns, buildAutoTitle, getRunById } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -24,118 +30,17 @@ const LONG_AGENT_PROMPT_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt_lon
 const TOP_AGENT_PROMPT_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt_top.txt');
 const DEFAULT_SESSION_LOG = path.join(PROJECT_ROOT, 'current_session.txt');
 
+// Cargar .env como fallback
 dotenv.config({ path: path.join(PROJECT_ROOT, '.env'), override: false });
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-const DEFAULT_VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-3-pro-preview';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const DEFAULT_TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'whisper-1';
-const DEFAULT_AGENT_MODEL = process.env.GEMINI_AGENT_MODEL || 'gemini-3-pro-preview';
-const DEFAULT_AGENT_MAX_OUTPUT_TOKENS = Number(process.env.GEMINI_AGENT_MAX_OUTPUT_TOKENS ?? 64000);
-const DEFAULT_THINKING_LEVEL = normalizeThinkingLevel(process.env.GEMINI_THINKING_LEVEL) || 'HIGH';
-const DEFAULT_MEDIA_RESOLUTION =
-  normalizeMediaResolution(process.env.GEMINI_MEDIA_RESOLUTION) || 'MEDIA_RESOLUTION_HIGH';
-const DOWNLOAD_ROOT =
-  process.env.GEMINI_OCR_DOWNLOAD_ROOT ||
-  process.env.OPENAI_OCR_DOWNLOAD_ROOT ||
-  path.join(os.tmpdir(), 'twx-gallery-dl');
-const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY || null;
-const MISTRAL_ORG_ID =
-  process.env.MISTRAL_ORG_ID || process.env.MISTRAL_ORGANIZATION || process.env.MISTRAL_ORG || null;
-const MISTRAL_OCR_MODEL = process.env.MISTRAL_OCR_MODEL || 'mistral-ocr-latest';
+// Constantes
 const MAX_INLINE_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_WHISPER_FILE_BYTES = 25 * 1024 * 1024;
-const WHISPER_SEGMENT_SECONDS = clampInt(
-  process.env.WHISPER_SEGMENT_SECONDS || process.env.TWX_SEGMENT_SECONDS,
-  60,
-  1200,
-  480
-);
-const WHISPER_TARGET_BITRATE = process.env.WHISPER_AUDIO_BITRATE || '48k';
-const WHISPER_TARGET_SAMPLE_RATE = process.env.WHISPER_SAMPLE_RATE || '16000';
-const SPINNER_ENABLED = process.stdout.isTTY && process.env.TWX_NO_SPINNER !== '1';
-let DEBUG_ENABLED = process.env.TWX_DEBUG === '1';
-const DEFAULT_MODE = (process.env.TWX_MODE || 'standard').toLowerCase();
-const KEEP_DOWNLOADS = process.env.TWX_KEEP_DOWNLOADS === '1';
-const CLIP_OPTION_KEYS = new Set(['--clip', '--range', '--segment']);
-const CLIP_START_KEYS = new Set([
-  '--start',
-  '--from',
-  '--clip-start',
-  '--clip_start',
-  '--first-time',
-  '--first_time'
-]);
-const CLIP_END_KEYS = new Set(['--end', '--to', '--clip-end', '--clip_end', '--last-time', '--last_time']);
-
-function debugLog(...args) {
-  if (DEBUG_ENABLED) {
-    console.log('[DEBUG]', ...args);
-  }
-}
-
-function clampInt(value, min, max, fallback) {
-  const num = Number(value);
-  if (Number.isFinite(num)) {
-    return Math.min(Math.max(Math.round(num), min), max);
-  }
-  return fallback;
-}
-
-function parseTimecode(value) {
-  if (!value && value !== 0) {
-    return null;
-  }
-  const trimmed = String(value).trim();
-  if (!trimmed) {
-    return null;
-  }
-  if (/^\d+(\.\d+)?$/.test(trimmed)) {
-    return Number(trimmed);
-  }
-  const parts = trimmed.split(':').map((p) => p.trim()).filter(Boolean);
-  if (!parts.length || parts.some((p) => Number.isNaN(Number(p)))) {
-    return null;
-  }
-  const nums = parts.map((p) => Number(p));
-  let seconds = 0;
-  if (nums.length === 3) {
-    seconds = nums[0] * 3600 + nums[1] * 60 + nums[2];
-  } else if (nums.length === 2) {
-    seconds = nums[0] * 60 + nums[1];
-  } else if (nums.length === 1) {
-    seconds = nums[0];
-  } else {
-    return null;
-  }
-  if (!Number.isFinite(seconds) || seconds < 0) {
-    return null;
-  }
-  return seconds;
-}
-
-function formatTimecode(seconds) {
-  if (seconds == null || Number.isNaN(seconds)) {
-    return null;
-  }
-  const total = Math.max(0, Math.floor(seconds));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  const hh = h > 0 ? String(h).padStart(2, '0') + ':' : '';
-  return `${hh}${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
 
 const IMAGE_MIME_TYPES = {
-  '.apng': 'image/apng',
-  '.avif': 'image/avif',
-  '.bmp': 'image/bmp',
-  '.gif': 'image/gif',
-  '.jpeg': 'image/jpeg',
-  '.jpg': 'image/jpeg',
-  '.png': 'image/png',
-  '.tif': 'image/tiff',
-  '.tiff': 'image/tiff',
+  '.apng': 'image/apng', '.avif': 'image/avif', '.bmp': 'image/bmp',
+  '.gif': 'image/gif', '.jpeg': 'image/jpeg', '.jpg': 'image/jpeg',
+  '.png': 'image/png', '.tif': 'image/tiff', '.tiff': 'image/tiff',
   '.webp': 'image/webp'
 };
 
@@ -144,386 +49,482 @@ const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg
 const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.rtf']);
 
 const STYLE_PRESETS = {
-  musk:
-    'Resumí en español con la voz de Elon Musk: frases cortas, tono técnico y enfoque en próximos pasos y apuestas audaces.',
-  bukowski:
-    'Resumí en español como Charles Bukowski: crudo, directo, sin adornos pero con acciones claras.',
+  musk: 'Resumí en español con la voz de Elon Musk: frases cortas, tono técnico y enfoque en próximos pasos y apuestas audaces.',
+  bukowski: 'Resumí en español como Charles Bukowski: crudo, directo, sin adornos pero con acciones claras.',
   raw: 'Devuelve el texto original sin resumir ni comentar.',
   brief: 'Armá un brief ejecutivo en tres viñetas con las ideas más filosas, siempre en español.'
 };
 
 const STYLE_ALIASES = {
-  m: 'musk',
-  mx: 'musk',
-  max: 'musk',
-  elon: 'musk',
-  musk: 'musk',
-  buk: 'bukowski',
-  bukowski: 'bukowski',
-  bk: 'bukowski',
-  raw: 'raw',
-  plain: 'raw',
-  txt: 'raw',
-  brief: 'brief',
-  sum: 'brief'
+  m: 'musk', mx: 'musk', max: 'musk', elon: 'musk', musk: 'musk',
+  buk: 'bukowski', bukowski: 'bukowski', bk: 'bukowski',
+  raw: 'raw', plain: 'raw', txt: 'raw',
+  brief: 'brief', sum: 'brief'
 };
 
 const TWITTER_HOSTS = new Set(['twitter.com', 'www.twitter.com', 'x.com', 'www.x.com', 'mobile.twitter.com']);
 const YOUTUBE_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be']);
-const SPINNER_STUB = {
-  set text(value) {
-    this._text = value;
-  },
-  succeed() {},
-  fail() {},
-  stop() {},
-  info() {}
-};
 
-function startSpinner(text) {
-  if (!SPINNER_ENABLED) {
-    const stub = Object.create(SPINNER_STUB);
-    stub._text = text;
-    return stub;
-  }
-  return ora({ text, color: 'cyan' }).start();
-}
-
-function delayMs(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+// ============ MAIN ============
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  if (options.debug) {
-    DEBUG_ENABLED = true;
-  }
-  debugLog('Options:', options);
 
-  if (options.clipRange && !options.list && !options.showId && !options.json) {
-    const startLabel = formatTimecode(options.clipRange.start ?? 0);
-    const endLabel = options.clipRange.end != null ? formatTimecode(options.clipRange.end) : 'fin';
-    console.log(`\nClip de audio: ${startLabel} → ${endLabel}`);
+  // Activar verbose si se pidió
+  if (options.verbose) {
+    ui.setVerbose(true);
   }
+
+  // Comando: config
+  if (options.configCommand) {
+    if (options.configReset) {
+      await resetConfig();
+      ui.clack.log.success('Configuración reseteada.');
+      return;
+    }
+    if (options.configShow) {
+      await showConfig();
+      return;
+    }
+    await runSetup({ force: true });
+    return;
+  }
+
+  // Comando: list
   if (options.list) {
     await handleListCommand(options);
     return;
   }
+
+  // Comando: show
   if (options.showId) {
-    await handleShowCommand(options.showId, { showTranscript: options.showTranscript });
+    await handleShowCommand(options.showId, options);
     return;
   }
+
+  // Verificar configuración
+  if (!await isConfigured()) {
+    await runSetup();
+    return;
+  }
+
+  // Validar input
   if (!options.inputPath && !options.url) {
-    exitWithUsage('Provide --path or --url.');
+    showUsage();
+    return;
   }
 
-  const geminiKey = GEMINI_API_KEY;
-  const mistralKey = MISTRAL_API_KEY;
-  if (!mistralKey) {
-    exitWithUsage('Falta MISTRAL_API_KEY para OCR con Mistral.');
-  }
-  logRunInfo(options);
+  // Cargar config
+  const config = await loadConfig();
 
-  const openaiKey = OPENAI_API_KEY;
-  if (!openaiKey) {
-    console.warn('Falta OPENAI_API_KEY; no se podrán transcribir audios/videos con Whisper.');
+  ui.debug('Config loaded:', { ...config, mistralApiKey: '***', geminiApiKey: '***', openaiApiKey: '***' });
+  ui.debug('Options:', options);
+
+  // Validar API keys necesarias
+  if (!config.mistralApiKey) {
+    errors.show(new Error('Falta MISTRAL_API_KEY'));
+    return;
   }
 
-  const geminiClient = geminiKey ? new GoogleGenAI({ apiKey: geminiKey }) : null;
-  const openaiClient = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
-  const mediaItems = [];
-  const cleanupTasks = [];
+  // Inicializar clientes
+  const geminiClient = config.geminiApiKey ? new GoogleGenAI({ apiKey: config.geminiApiKey }) : null;
+  const openaiClient = config.openaiApiKey ? new OpenAI({ apiKey: config.openaiApiKey }) : null;
+
+  // Procesar medios
+  const spin = ui.spinner('Analizando...');
+
+  try {
+    const { items: mediaItems, cleanup } = await collectMediaItems(options, config);
+
+    if (!mediaItems.length) {
+      spin.error('Sin contenido');
+      errors.show(new errors.HumanError('No encontré contenido para procesar.', {
+        tip: 'Verificá que la URL sea válida o que la carpeta contenga archivos de imagen/audio/video.'
+      }));
+      return;
+    }
+
+    ui.debug('Media items:', mediaItems.map(i => i.path));
+
+    // Extraer texto de cada item
+    const results = [];
+    const contextMap = await gatherContextForItems(mediaItems);
+
+    for (let i = 0; i < mediaItems.length; i++) {
+      const item = mediaItems[i];
+      const absolutePath = path.resolve(item.path);
+      const relativePath = path.relative(process.cwd(), absolutePath) || absolutePath;
+
+      spin.update(`Procesando ${i + 1}/${mediaItems.length}...`);
+      ui.debug('Processing:', relativePath, 'type:', item.type);
+
+      try {
+        let text = '';
+
+        if (item.type === 'image') {
+          text = await extractTextFromImage({ filePath: absolutePath, config });
+        } else if (item.type === 'video' || item.type === 'audio') {
+          if (!openaiClient) {
+            throw new errors.HumanError('Necesito OpenAI API key para transcribir audio/video.', {
+              tip: 'Ejecutá "twx config" para agregar tu clave de OpenAI.'
+            });
+          }
+          text = await transcribeMedia({ openaiClient, filePath: absolutePath, clipRange: options.clipRange, config });
+        } else if (item.type === 'text') {
+          text = await readPlainText(absolutePath, item.inlineText);
+        }
+
+        const context = contextMap.get(absolutePath) || null;
+        results.push({ file: relativePath, type: item.type, text, context });
+        ui.debug('Extracted:', { file: relativePath, chars: text?.length || 0 });
+
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const context = contextMap.get(absolutePath) || null;
+        results.push({ file: relativePath, type: item.type, error: message, context });
+        ui.debug('Error processing:', relativePath, message);
+      }
+    }
+
+    // Cleanup downloads temporales
+    if (cleanup) {
+      try { await cleanup(); } catch (e) { ui.debug('Cleanup error:', e); }
+    }
+
+    spin.success('Listo');
+
+    // Modo raw: solo mostrar transcripciones
+    const normalizedStyle = normalizeStyle(options.style || config.style);
+    const rawMode = normalizedStyle === 'raw' && !options.styleFile && !options.styleText;
+
+    if (rawMode) {
+      const combined = results
+        .filter(r => r.text)
+        .map(r => r.text)
+        .join('\n\n');
+
+      if (combined) {
+        ui.showRawResult(combined, { label: 'Transcripción' });
+      }
+
+      await persistRun({ options, config, results, agentData: null, rawMode: true });
+      return;
+    }
+
+    // Ejecutar agente IA
+    let agentData = null;
+    let conversationHistory = [];
+
+    if (geminiClient && results.some(r => r.text)) {
+      const agentResult = await runInsightAgent({
+        client: geminiClient,
+        results,
+        style: options.style || config.style,
+        styleFile: options.styleFile,
+        styleText: options.styleText,
+        mode: options.mode || config.mode,
+        config
+      });
+
+      if (agentResult) {
+        agentData = agentResult.agentData;
+        conversationHistory = agentResult.history || [];
+
+        // Mostrar resultado
+        if (agentData?.finalResponse) {
+          ui.showResult(stripXmlTags(agentData.finalResponse), {
+            title: agentData.title || null
+          });
+        }
+      }
+    } else if (!geminiClient) {
+      errors.warn('Sin clave Gemini, no puedo analizar con IA.', {
+        verbose: options.verbose,
+        technical: 'Ejecutá "twx config" para agregar GEMINI_API_KEY'
+      });
+
+      // Mostrar raw como fallback
+      const combined = results.filter(r => r.text).map(r => r.text).join('\n\n');
+      if (combined) {
+        ui.showRawResult(combined);
+      }
+    }
+
+    // Guardar en historial
+    await persistRun({ options, config, results, agentData, rawMode: false });
+
+    // Modo chat interactivo
+    if (geminiClient && ui.isInteractive() && agentData?.finalResponse) {
+      await startConversationLoop({
+        client: geminiClient,
+        results,
+        options,
+        config,
+        conversationHistory
+      });
+    }
+
+  } catch (error) {
+    spin.error('Error');
+    errors.show(error, { verbose: options.verbose });
+    process.exit(1);
+  }
+}
+
+// ============ MEDIA COLLECTION ============
+
+async function collectMediaItems(options, config) {
+  const items = [];
+  let cleanup = null;
 
   if (options.inputPath) {
     const stats = await safeStat(options.inputPath);
     if (!stats) {
-      exitWithUsage(`Ruta de entrada no encontrada: ${options.inputPath}`);
+      throw new errors.HumanError(`No encontré: ${options.inputPath}`, {
+        tip: 'Verificá que la ruta sea correcta.'
+      });
     }
 
     if (stats.isDirectory()) {
       const collected = await collectMedia(options.inputPath, { recursive: options.recursive });
-      mediaItems.push(...collected);
-      debugLog('Media found in directory:', collected.map((item) => item.path));
+      items.push(...collected);
     } else {
       const type = getMediaType(options.inputPath);
       if (!type) {
-        exitWithUsage(`Tipo de archivo no soportado: ${options.inputPath}`);
+        throw new errors.HumanError(`Tipo de archivo no soportado: ${options.inputPath}`, {
+          tip: 'Formatos soportados: imágenes (jpg, png, gif, webp), audio (mp3, m4a, wav), video (mp4, mkv, mov)'
+        });
       }
-      mediaItems.push({ path: options.inputPath, type });
-      debugLog('Single file detected:', options.inputPath, 'type:', type);
+      items.push({ path: options.inputPath, type });
     }
   }
 
   if (options.url) {
-    const download = await downloadRemoteMedia(options.url);
-    if (!download.items.length) {
-      exitWithUsage(`No se descargaron medios compatibles desde: ${options.url}`);
-    }
-    mediaItems.push(...download.items);
-    if (download.baseDir && !KEEP_DOWNLOADS) {
-      cleanupTasks.push(() => fs.rm(download.baseDir, { recursive: true, force: true }).catch(() => {}));
-    }
-    debugLog('Media downloaded from URL:', options.url, download.items.map((item) => item.path));
-  }
+    const download = await downloadRemoteMedia(options.url, config);
+    items.push(...download.items);
 
-  if (!mediaItems.length) {
-    exitWithUsage('No hay medios compatibles para procesar.');
-  }
-
-  const contextMap = await gatherContextForItems(mediaItems);
-
-  const results = [];
-
-  for (const item of mediaItems) {
-    const absolutePath = path.resolve(item.path);
-    const relativePath = path.relative(process.cwd(), absolutePath) || absolutePath;
-    const spinner = startSpinner(`processing ${item.type} · ${path.basename(relativePath)}`);
-    debugLog('Processing media', relativePath, 'type', item.type);
-    try {
-      let text = '';
-      if (item.type === 'image') {
-        text = await extractTextFromImage({
-          filePath: absolutePath
-        });
-      } else if (item.type === 'video' || item.type === 'audio') {
-        text = await transcribeMedia({ openaiClient, filePath: absolutePath, clipRange: options.clipRange });
-      } else if (item.type === 'text') {
-        text = await readPlainText(absolutePath, item.inlineText);
-      } else {
-        throw new Error(`Tipo de medio no soportado: ${relativePath}`);
-      }
-
-      const context = contextMap.get(absolutePath) || null;
-      results.push({ file: relativePath, type: item.type, text, context });
-      debugLog('Text obtained', { file: relativePath, type: item.type, preview: text.slice(0, 120) });
-      spinner.succeed(`done ${path.basename(relativePath)}`);
-      if (!options.json) {
-        logResult({ file: relativePath, type: item.type }, text, context);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const context = contextMap.get(absolutePath) || null;
-      results.push({ file: relativePath, type: item.type, error: message, context });
-      debugLog('Error processing', relativePath, message);
-      spinner.fail(`error ${path.basename(relativePath)}`);
-      if (!options.json) {
-        console.error(`\nerror · ${relativePath}`);
-        console.error(`        ${message}`);
-      }
+    if (download.baseDir && !config.keepDownloads) {
+      cleanup = () => fs.rm(download.baseDir, { recursive: true, force: true }).catch(() => {});
     }
   }
 
-  if (cleanupTasks.length) {
-    for (const task of cleanupTasks) {
-      try {
-        await task();
-      } catch (error) {
-        debugLog('Cleanup error:', error);
-      }
-    }
-  }
-
-  if (options.json || options.outputFile) {
-    const payload = JSON.stringify(
-      {
-        vision_model: DEFAULT_VISION_MODEL,
-        transcription_model: DEFAULT_TRANSCRIBE_MODEL,
-        mode: options.mode,
-        results
-      },
-      null,
-      2
-    );
-    if (options.outputFile) {
-      await fs.writeFile(options.outputFile, payload, 'utf8');
-      if (!options.json) {
-        console.log(`\nresults saved to ${options.outputFile}`);
-      }
-      debugLog('JSON saved to', options.outputFile);
-    }
-    if (options.json) {
-      console.log(payload);
-      debugLog('JSON written to stdout');
-    }
-  }
-
-  const normalizedStyle = normalizeStyle(options.style);
-  const hasCustomStyleInput = Boolean(options.styleFile || options.styleText);
-  const rawMode = normalizedStyle === 'raw' && !hasCustomStyleInput;
-  debugLog('Normalized style:', normalizedStyle, 'rawMode:', rawMode);
-
-  if (rawMode) {
-    const combined = results
-      .filter((entry) => entry.text)
-      .map((entry) => `### ${entry.file}\n${entry.text}`)
-      .join('\n\n');
-    if (combined) {
-      console.log('\n--- RAW TRANSCRIPTS (no GPT) ---');
-      console.log(combined);
-      debugLog('Raw mode enabled, combined chars:', combined.length);
-    }
-  }
-
-  const shouldRunAgent = Boolean(
-    !rawMode &&
-      (options.style || options.styleFile || options.styleText) &&
-      results.some((entry) => entry.text)
-  );
-  debugLog('Should run agent?', shouldRunAgent);
-
-  let conversationHistory = [];
-  let agentData = null;
-
-  if (shouldRunAgent && !geminiClient) {
-    console.warn('\n⚠️ Agent solicitado pero falta GEMINI_API_KEY/GOOGLE_API_KEY; se omite el paso de insights.');
-  } else if (shouldRunAgent) {
-    const { history, agentData: seedAgentData } = await runInsightAgent({
-      client: geminiClient,
-      results,
-      style: options.style,
-      styleFile: options.styleFile,
-      styleText: options.styleText,
-      showReflection: options.showReflection,
-      sessionLog: options.sessionLog,
-      agentPromptPath: resolveAgentPromptPath(options.mode, options.agentPromptPath),
-      debug: DEBUG_ENABLED
-    });
-    conversationHistory = history || [];
-    agentData = seedAgentData || null;
-  }
-
-  await persistRun({
-    options,
-    results,
-    agentData,
-    promptPath: resolveAgentPromptPath(options.mode, options.agentPromptPath),
-    rawMode,
-    shouldRunAgent
-  });
-
-  if (
-    shouldRunAgent &&
-    geminiClient &&
-    supportsInteractivePrompts() &&
-    !options.json &&
-    !rawMode &&
-    results.some((entry) => entry.text)
-  ) {
-    await startConversationLoop({
-      client: geminiClient,
-      results,
-      options,
-      conversationHistory,
-      agentPromptPath: resolveAgentPromptPath(options.mode, options.agentPromptPath)
-    });
-  }
+  return { items, cleanup };
 }
 
-async function extractTextFromImage({ filePath }) {
-  if (!MISTRAL_API_KEY) {
-    throw new Error('Falta MISTRAL_API_KEY para OCR con Mistral.');
+async function collectMedia(targetPath, { recursive = true } = {}) {
+  const entries = await fs.readdir(targetPath, { withFileTypes: true });
+  const items = [];
+
+  for (const entry of entries) {
+    const entryPath = path.join(targetPath, entry.name);
+
+    if (entry.isFile()) {
+      const type = getMediaType(entryPath);
+      if (type) items.push({ path: entryPath, type });
+    } else if (recursive && entry.isDirectory()) {
+      const subItems = await collectMedia(entryPath, { recursive });
+      items.push(...subItems);
+    }
   }
 
-  const extension = path.extname(filePath).toLowerCase();
-  const mimeType = IMAGE_MIME_TYPES[extension] || 'image/png';
+  return items;
+}
+
+function getMediaType(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (IMAGE_MIME_TYPES[ext]) return 'image';
+  if (VIDEO_EXTENSIONS.has(ext)) return 'video';
+  if (AUDIO_EXTENSIONS.has(ext)) return 'audio';
+  if (TEXT_EXTENSIONS.has(ext)) return 'text';
+  return null;
+}
+
+// ============ DOWNLOAD ============
+
+async function downloadRemoteMedia(url, config) {
+  let hostname;
+  try {
+    hostname = new URL(url).hostname.toLowerCase();
+  } catch {
+    throw new errors.HumanError(`URL inválida: ${url}`, {
+      tip: 'Asegurate de copiar la URL completa.'
+    });
+  }
+
+  const downloadRoot = config.downloadRoot || path.join(os.tmpdir(), 'twx-gallery-dl');
+
+  if (YOUTUBE_HOSTS.has(hostname)) {
+    return downloadWithYtDlp(url, downloadRoot);
+  }
+
+  return downloadWithGalleryDl(url, downloadRoot);
+}
+
+async function downloadWithGalleryDl(url, downloadRoot) {
+  await fs.mkdir(downloadRoot, { recursive: true });
+  const runDir = await fs.mkdtemp(path.join(downloadRoot, 'run-'));
+
+  ui.debug('Downloading with gallery-dl:', url);
+
+  try {
+    await runExternalCommand('gallery-dl', ['--quiet', '--write-info-json', '--write-metadata', '-d', runDir, url]);
+  } catch (error) {
+    throw new errors.HumanError('No pude descargar ese contenido.', {
+      tip: 'Verificá que la URL sea pública y gallery-dl esté instalado.',
+      technical: error.message
+    });
+  }
+
+  let items = await collectMedia(runDir, { recursive: true });
+
+  // Si no hay medios, buscar texto en metadata
+  if (!items.length) {
+    const textItems = await collectTextFromMetadata(runDir);
+    if (!textItems.length) {
+      const dumpItems = await collectTextFromDump(url);
+      textItems.push(...dumpItems);
+    }
+    if (!textItems.length) {
+      const fxItem = await collectTextFromFxApi(url);
+      if (fxItem) textItems.push(fxItem);
+    }
+    items.push(...textItems);
+  }
+
+  return { baseDir: runDir, items };
+}
+
+async function downloadWithYtDlp(url, downloadRoot) {
+  await fs.mkdir(downloadRoot, { recursive: true });
+  const runDir = await fs.mkdtemp(path.join(downloadRoot, 'yt-'));
+
+  ui.debug('Downloading with yt-dlp:', url);
+
+  try {
+    await runExternalCommand('yt-dlp', [
+      '-q', '-P', runDir, '-o', '%(title)s.%(ext)s',
+      '-f', 'bestaudio/best', '--no-progress', '--write-info-json', url
+    ]);
+  } catch (error) {
+    throw new errors.HumanError('No pude descargar ese video.', {
+      tip: 'Verificá que la URL sea válida y yt-dlp esté instalado.',
+      technical: error.message
+    });
+  }
+
+  const items = await collectMedia(runDir, { recursive: true });
+  return { baseDir: runDir, items };
+}
+
+// ============ OCR ============
+
+async function extractTextFromImage({ filePath, config }) {
+  if (!config.mistralApiKey) {
+    throw new errors.HumanError('Falta la clave de Mistral para OCR.');
+  }
+
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeType = IMAGE_MIME_TYPES[ext] || 'image/png';
   const buffer = await fs.readFile(filePath);
+
   if (buffer.length > MAX_INLINE_FILE_BYTES) {
-    throw new Error(
-      `Imagen demasiado grande para Mistral (${Math.round(buffer.length / (1024 * 1024))}MB). Comprimila a <20MB.`
-    );
+    throw new errors.HumanError('Imagen demasiado grande.', {
+      tip: `El límite es 20MB. Esta imagen tiene ${Math.round(buffer.length / (1024 * 1024))}MB.`
+    });
   }
 
   const pdfBuffer = await imageToPdfBuffer(buffer, mimeType);
   const dataUrl = `data:application/pdf;base64,${pdfBuffer.toString('base64')}`;
 
   const headers = {
-    Authorization: `Bearer ${MISTRAL_API_KEY}`,
+    Authorization: `Bearer ${config.mistralApiKey}`,
     'Content-Type': 'application/json'
   };
-  if (MISTRAL_ORG_ID) {
-    headers['Mistral-Organization'] = MISTRAL_ORG_ID;
+
+  if (config.mistralOrgId) {
+    headers['Mistral-Organization'] = config.mistralOrgId;
   }
 
-  const body = {
-    model: MISTRAL_OCR_MODEL,
-    document: { type: 'document_url', document_url: dataUrl }
-  };
+  ui.debug('Calling Mistral OCR, bytes:', buffer.length);
 
-  debugLog('Calling Mistral OCR with file', filePath, 'bytes', buffer.length, 'pdfBytes', pdfBuffer.length);
-  const started = Date.now();
   const response = await fetch('https://api.mistral.ai/v1/ocr', {
     method: 'POST',
     headers,
-    body: JSON.stringify(body)
+    body: JSON.stringify({
+      model: config.ocrModel || 'mistral-ocr-latest',
+      document: { type: 'document_url', document_url: dataUrl }
+    })
   });
+
   const raw = await response.text();
-  debugLog('Mistral OCR response', {
-    status: response.status,
-    statusText: response.statusText,
-    elapsed: Date.now() - started,
-    rawPreview: raw.slice(0, 200)
-  });
+
   if (!response.ok) {
-    throw new Error(`Mistral OCR falló: ${response.status} ${response.statusText} body=${raw.slice(0, 400)}`);
+    throw new errors.HumanError('Falló el OCR de Mistral.', {
+      technical: `${response.status} ${response.statusText}: ${raw.slice(0, 200)}`
+    });
   }
-  let data = null;
-  try {
-    data = JSON.parse(raw);
-  } catch (error) {
-    throw new Error(`Respuesta OCR no es JSON: ${error instanceof Error ? error.message : error}`);
-  }
+
+  const data = JSON.parse(raw);
   const text = extractMistralOcrText(data);
+
   if (!text) {
-    throw new Error('OCR de Mistral no devolvió texto.');
+    throw new errors.HumanError('No pude leer texto de la imagen.', {
+      tip: 'La imagen puede estar muy borrosa o no contener texto.'
+    });
   }
+
   return text.trim();
 }
 
 async function imageToPdfBuffer(imageBuffer, mimeType) {
   const pdfDoc = await PDFDocument.create();
   let embedded;
+
   if (mimeType === 'image/png' || mimeType === 'image/webp' || mimeType === 'image/gif') {
     embedded = await pdfDoc.embedPng(imageBuffer);
   } else {
     embedded = await pdfDoc.embedJpg(imageBuffer);
   }
+
   const page = pdfDoc.addPage([embedded.width, embedded.height]);
-  page.drawImage(embedded, {
-    x: 0,
-    y: 0,
-    width: embedded.width,
-    height: embedded.height
-  });
+  page.drawImage(embedded, { x: 0, y: 0, width: embedded.width, height: embedded.height });
+
   return Buffer.from(await pdfDoc.save());
 }
 
 function extractMistralOcrText(data) {
   const parts = [];
   const pages = data?.result?.pages || data?.pages;
+
   if (Array.isArray(pages)) {
     for (const page of pages) {
       const text = page?.text || page?.output_text || page?.content || page?.markdown;
-      if (text) {
-        parts.push(String(text));
-      }
+      if (text) parts.push(String(text));
     }
   }
+
   if (data?.output_text) parts.push(String(data.output_text));
   if (data?.text) parts.push(String(data.text));
   if (data?.result?.text) parts.push(String(data.result.text));
-  return parts
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .join('\n\n');
+
+  return parts.map(v => v.trim()).filter(Boolean).join('\n\n');
 }
 
-async function transcribeMedia({ openaiClient, filePath, clipRange = null }) {
-  if (!openaiClient) {
-    throw new Error('Falta OPENAI_API_KEY para transcribir audio/video con Whisper.');
-  }
-  const clipped = await clipMediaSegment(filePath, clipRange);
-  const prepared = await prepareAudioForWhisper(clipped.path);
-  const segmented = await splitAudioIfNeeded(prepared.path);
+// ============ TRANSCRIPTION ============
+
+async function transcribeMedia({ openaiClient, filePath, clipRange = null, config }) {
+  const whisperSegmentSeconds = config.whisperSegmentSeconds || 480;
+  const whisperBitrate = config.whisperBitrate || '48k';
+  const whisperSampleRate = config.whisperSampleRate || '16000';
+
+  // Clip si se pidió
+  const clipped = await clipMediaSegment(filePath, clipRange, { whisperBitrate, whisperSampleRate });
+
+  // Preparar audio
+  const prepared = await prepareAudioForWhisper(clipped.path, { whisperBitrate, whisperSampleRate });
+
+  // Split si es muy grande
+  const segmented = await splitAudioIfNeeded(prepared.path, { whisperSegmentSeconds, whisperBitrate, whisperSampleRate });
 
   const cleanupTasks = [clipped.cleanup, prepared.cleanup, segmented.cleanup].filter(Boolean);
   const parts = [];
@@ -532,80 +533,56 @@ async function transcribeMedia({ openaiClient, filePath, clipRange = null }) {
     for (const segmentPath of segmented.paths) {
       const stream = createReadStream(segmentPath);
       const response = await openaiClient.audio.transcriptions.create({
-        model: DEFAULT_TRANSCRIBE_MODEL,
+        model: config.transcribeModel || 'whisper-1',
         file: stream,
         response_format: 'text'
       });
-      if (!response) {
-        throw new Error(`Empty transcription for ${segmentPath}`);
-      }
+
       const text = typeof response === 'string' ? response : response.text;
-      debugLog('Whisper transcription captured', { filePath: segmentPath, chars: text?.length || 0 });
-      if (text && text.trim()) {
-        parts.push(text.trim());
-      }
+      if (text?.trim()) parts.push(text.trim());
     }
   } finally {
     for (const cleanup of cleanupTasks) {
-      if (cleanup) {
-        await cleanup();
-      }
+      if (cleanup) await cleanup();
     }
   }
 
   if (!parts.length) {
-    throw new Error(`No transcription text produced for ${filePath}`);
+    throw new errors.HumanError('No pude transcribir el audio.', {
+      tip: 'El archivo puede estar vacío o en un formato no soportado.'
+    });
   }
 
   return parts.join('\n\n');
 }
 
-async function readPlainText(filePath, inlineText = null) {
-  if (inlineText) {
-    return String(inlineText).trim();
-  }
-  const data = await fs.readFile(filePath, 'utf8');
-  return data.trim();
-}
-
-async function prepareAudioForWhisper(filePath) {
+async function prepareAudioForWhisper(filePath, { whisperBitrate, whisperSampleRate }) {
   const stats = await fs.stat(filePath);
   if (stats.size <= MAX_WHISPER_FILE_BYTES) {
     return { path: filePath, cleanup: null };
   }
 
-  console.log('\ncompressing media for whisper…');
-  return transcodeForWhisper(filePath);
+  ui.debug('Compressing audio for Whisper...');
+  return transcodeForWhisper(filePath, { whisperBitrate, whisperSampleRate });
 }
 
-async function transcodeForWhisper(filePath) {
+async function transcodeForWhisper(filePath, { whisperBitrate, whisperSampleRate }) {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'twx-audio-'));
   const basename = path.basename(filePath, path.extname(filePath));
   const targetPath = path.join(tmpDir, `${basename}-twx.m4a`);
-  const args = [
-    '-hide_banner',
-    '-loglevel',
-    'error',
-    '-y',
-    '-i',
-    filePath,
-    '-vn',
-    '-ac',
-    '1',
-    '-ar',
-    WHISPER_TARGET_SAMPLE_RATE,
-    '-b:a',
-    WHISPER_TARGET_BITRATE,
-    targetPath
-  ];
 
   try {
-    await runExternalCommand('ffmpeg', args, { stdio: 'inherit' });
+    await runExternalCommand('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-i', filePath, '-vn', '-ac', '1',
+      '-ar', whisperSampleRate, '-b:a', whisperBitrate, targetPath
+    ]);
   } catch (error) {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    throw new Error(
-      'ffmpeg es requerido para comprimir medios >25MB antes de Whisper. Instalalo o comprimí el archivo manualmente.'
-    );
+    throw new errors.HumanError('Necesito ffmpeg para comprimir audio.', {
+      tip: 'Instalalo con: brew install ffmpeg',
+      technical: error.message
+    });
   }
 
   return {
@@ -614,7 +591,7 @@ async function transcodeForWhisper(filePath) {
   };
 }
 
-async function clipMediaSegment(filePath, clipRange) {
+async function clipMediaSegment(filePath, clipRange, { whisperBitrate, whisperSampleRate }) {
   if (!clipRange || (clipRange.start == null && clipRange.end == null)) {
     return { path: filePath, cleanup: null };
   }
@@ -626,36 +603,21 @@ async function clipMediaSegment(filePath, clipRange) {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'twx-clip-'));
   const basename = path.basename(filePath, path.extname(filePath));
   const targetPath = path.join(tmpDir, `${basename}-clip.m4a`);
+
   const args = [
-    '-hide_banner',
-    '-loglevel',
-    'error',
-    '-y',
-    '-ss',
-    String(start),
-    '-i',
-    filePath,
-    '-vn',
-    '-ac',
-    '1',
-    '-ar',
-    WHISPER_TARGET_SAMPLE_RATE,
-    '-b:a',
-    WHISPER_TARGET_BITRATE
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-ss', String(start), '-i', filePath,
+    '-vn', '-ac', '1', '-ar', whisperSampleRate, '-b:a', whisperBitrate
   ];
 
-  if (duration && duration > 0) {
-    args.push('-t', String(duration));
-  }
+  if (duration && duration > 0) args.push('-t', String(duration));
   args.push(targetPath);
 
   try {
-    await runExternalCommand('ffmpeg', args, { stdio: 'inherit' });
+    await runExternalCommand('ffmpeg', args);
   } catch (error) {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    throw new Error(
-      'ffmpeg es requerido para recortar audio/video antes de Whisper. Instalalo o quitá los flags de clip.'
-    );
+    throw new errors.HumanError('Error recortando audio.', { technical: error.message });
   }
 
   return {
@@ -664,57 +626,33 @@ async function clipMediaSegment(filePath, clipRange) {
   };
 }
 
-async function splitAudioIfNeeded(filePath) {
+async function splitAudioIfNeeded(filePath, { whisperSegmentSeconds, whisperBitrate, whisperSampleRate }) {
   const stats = await fs.stat(filePath);
   if (stats.size <= MAX_WHISPER_FILE_BYTES) {
     return { paths: [filePath], cleanup: null };
   }
 
-  console.log(`\nsplitting audio into ~${Math.round(WHISPER_SEGMENT_SECONDS / 60)} min chunks for whisper…`);
+  ui.debug(`Splitting audio into ~${Math.round(whisperSegmentSeconds / 60)} min chunks...`);
+
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'twx-chunks-'));
   const pattern = path.join(tmpDir, 'chunk-%03d.m4a');
-  const args = [
-    '-hide_banner',
-    '-loglevel',
-    'error',
-    '-y',
-    '-i',
-    filePath,
-    '-vn',
-    '-ac',
-    '1',
-    '-ar',
-    WHISPER_TARGET_SAMPLE_RATE,
-    '-b:a',
-    WHISPER_TARGET_BITRATE,
-    '-f',
-    'segment',
-    '-segment_time',
-    String(WHISPER_SEGMENT_SECONDS),
-    pattern
-  ];
 
-  await runExternalCommand('ffmpeg', args, { stdio: 'inherit' });
+  await runExternalCommand('ffmpeg', [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-i', filePath, '-vn', '-ac', '1',
+    '-ar', whisperSampleRate, '-b:a', whisperBitrate,
+    '-f', 'segment', '-segment_time', String(whisperSegmentSeconds), pattern
+  ]);
 
   const entries = await fs.readdir(tmpDir);
   const paths = entries
-    .filter((name) => name.startsWith('chunk-') && name.endsWith('.m4a'))
-    .map((name) => path.join(tmpDir, name))
+    .filter(n => n.startsWith('chunk-') && n.endsWith('.m4a'))
+    .map(n => path.join(tmpDir, n))
     .sort();
 
   if (!paths.length) {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    throw new Error('No se generaron segmentos de audio para Whisper.');
-  }
-
-  for (const chunkPath of paths) {
-    const chunkStats = await fs.stat(chunkPath);
-    if (chunkStats.size > MAX_WHISPER_FILE_BYTES) {
-      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-      throw new Error(
-        `Un segmento aún supera 25MB (${Math.round(chunkStats.size / (1024 * 1024))}MB). Bajá WHISPER_SEGMENT_SECONDS o WHISPER_AUDIO_BITRATE.`
-      );
-    }
+    throw new errors.HumanError('Error segmentando audio.');
   }
 
   return {
@@ -723,182 +661,365 @@ async function splitAudioIfNeeded(filePath) {
   };
 }
 
-async function downloadRemoteMedia(url) {
-  let hostname;
+async function readPlainText(filePath, inlineText = null) {
+  if (inlineText) return String(inlineText).trim();
+  const data = await fs.readFile(filePath, 'utf8');
+  return data.trim();
+}
+
+// ============ AGENT ============
+
+async function runInsightAgent({ client, results, style, styleFile, styleText, mode, config }) {
+  const promptPath = resolveAgentPromptPath(mode);
+  const promptSource = await fs.readFile(promptPath, 'utf8');
+
+  const normalizedStyle = normalizeStyle(style);
+  const preset = normalizedStyle && STYLE_PRESETS[normalizedStyle];
+  const customStyle = styleText || (styleFile ? await fs.readFile(path.resolve(styleFile), 'utf8') : '');
+
+  const spin = ui.spinner('Pensando...');
+
   try {
-    hostname = new URL(url).hostname.toLowerCase();
-  } catch {
-    throw new Error(`Invalid URL: ${url}`);
-  }
+    const payload = buildAgentPayload({ results, styleKey: normalizedStyle, preset, customStyle });
+    ui.debug('Agent payload length:', payload.length);
 
-  if (YOUTUBE_HOSTS.has(hostname)) {
-    return downloadWithYtDlp(url);
-  }
-  if (TWITTER_HOSTS.has(hostname)) {
-    return downloadWithGalleryDl(url);
-  }
-  return downloadWithGalleryDl(url);
-}
+    const safetySettings = [
+      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' }
+    ];
 
-async function downloadWithGalleryDl(url) {
-  await fs.mkdir(DOWNLOAD_ROOT, { recursive: true });
-  const runDir = await fs.mkdtemp(path.join(DOWNLOAD_ROOT, 'run-'));
-  debugLog('Downloading with gallery-dl into', runDir, 'url', url);
-  await runGalleryDl(url, runDir);
-  const items = await collectMedia(runDir, { recursive: true });
-  debugLog('Files captured by gallery-dl:', items.map((item) => item.path));
-  if (!items.length) {
-    const textItems = await collectTextFromMetadata(runDir);
-    if (!textItems.length) {
-      const dumpTextItems = await collectTextFromDump(url);
-      textItems.push(...dumpTextItems);
-    }
-    if (!textItems.length) {
-      const fxTextItem = await collectTextFromFxApi(url);
-      if (fxTextItem) {
-        textItems.push(fxTextItem);
+    const userContent = { role: 'user', parts: [{ text: payload }] };
+
+    const response = await client.models.generateContent({
+      model: config.agentModel || 'gemini-3-pro-preview',
+      contents: [userContent],
+      systemInstruction: { parts: [{ text: promptSource }] },
+      safetySettings,
+      config: {
+        maxOutputTokens: 64000,
+        temperature: 1,
+        thinkingLevel: config.thinkingLevel || 'HIGH',
+        mediaResolution: config.mediaResolution || 'MEDIA_RESOLUTION_HIGH'
       }
+    });
+
+    spin.success('Listo');
+
+    const rawXml = extractResponseText(response)?.trim() ?? '';
+    const xml = extractResponseBlock(rawXml);
+
+    if (!xml) {
+      ui.debug('No <response> block in:', rawXml.slice(0, 500));
+      return null;
     }
-    if (textItems.length) {
-      debugLog('Text-only tweet detected; creating virtual text item from metadata.');
-      items.push(...textItems);
+
+    const reflection = extractTag(xml, 'internal_reflection');
+    const plan = extractTag(xml, 'action_plan');
+    const finalResponse = extractTag(xml, 'final_response');
+    const title = extractTag(xml, 'title');
+
+    const assistantContent = response?.candidates?.[0]?.content || null;
+
+    return {
+      agentData: { reflection, plan, finalResponse, title, xml, promptPath },
+      history: [userContent, assistantContent].filter(Boolean)
+    };
+
+  } catch (error) {
+    spin.error('Error');
+    ui.debug('Agent error:', error);
+
+    if (error?.status === 429 || error?.message?.includes('quota')) {
+      throw new errors.HumanError('Límite de API alcanzado.', {
+        tip: 'Esperá unos minutos antes de volver a intentar.'
+      });
     }
+
+    throw error;
   }
-  return { baseDir: runDir, items };
 }
 
-async function downloadWithYtDlp(url) {
-  await fs.mkdir(DOWNLOAD_ROOT, { recursive: true });
-  const runDir = await fs.mkdtemp(path.join(DOWNLOAD_ROOT, 'yt-'));
-  const args = [
-    '-q',
-    '-P',
-    runDir,
-    '-o',
-    '%(title)s.%(ext)s',
-    '-f',
-    'bestaudio/best',
-    '--no-progress',
-    '--write-info-json',
-    url
-  ];
-  debugLog('Downloading with yt-dlp into', runDir, 'url', url, 'args', args);
-  await runExternalCommand('yt-dlp', args);
-  const items = await collectMedia(runDir, { recursive: true });
-  debugLog('Files captured by yt-dlp:', items.map((item) => item.path));
-  return { baseDir: runDir, items };
+function buildAgentPayload({ results, styleKey, preset, customStyle }) {
+  const blocks = [];
+
+  blocks.push('Idioma obligatorio: español neutro, tono directo y pragmático.');
+  blocks.push('Devuelve exclusivamente el bloque <response>…</response>.');
+  blocks.push(`Style preset: ${styleKey || 'none'}`);
+
+  if (preset) blocks.push(`Preset instructions:\n${preset}`);
+  if (customStyle?.trim()) blocks.push(`User custom instructions:\n${customStyle.trim()}`);
+
+  blocks.push(
+    'Materiales analizados:\n' +
+    results.map((entry, i) => {
+      const base = [`Item ${i + 1}`, `Archivo: ${entry.file}`, `Tipo: ${entry.type}`];
+      if (entry.error) {
+        base.push(`Error: ${entry.error}`);
+      } else {
+        base.push(`Texto:\n${entry.text || '[Sin texto]'}`);
+      }
+      if (entry.context) {
+        base.push(`Contexto:\n${entry.context}`);
+      }
+      return base.join('\n');
+    }).join('\n\n')
+  );
+
+  return blocks.join('\n\n');
 }
 
-async function runGalleryDl(url, baseDir) {
-  const args = ['--quiet', '--write-info-json', '--write-metadata', '-d', baseDir, url];
-  await runExternalCommand('gallery-dl', args);
-}
+// ============ CHAT ============
 
-async function runGalleryDlDump(url) {
-  debugLog('Running gallery-dl dump for text extraction', url);
-  const args = ['--dump-json', url];
-  const stdout = await runCommandCaptureStdout('gallery-dl', args);
-  const lines = stdout
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const objects = [];
-  for (const line of lines) {
+async function startConversationLoop({ client, results, options, config, conversationHistory }) {
+  const promptPath = resolveAgentPromptPath(options.mode || config.mode);
+  const promptSource = await fs.readFile(promptPath, 'utf8');
+  const normalizedStyle = normalizeStyle(options.style || config.style);
+  const preset = normalizedStyle && STYLE_PRESETS[normalizedStyle];
+
+  console.log('');
+  ui.clack.log.info('Modo chat activo. Escribí tu pregunta o "salir" para terminar.');
+
+  while (true) {
+    const input = await ui.chatPrompt();
+
+    if (!input || input.toLowerCase() === 'salir') {
+      ui.clack.log.message('Hasta luego.');
+      break;
+    }
+
+    const spin = ui.spinner('Pensando...');
+
     try {
-      const obj = JSON.parse(line);
-      objects.push(obj);
+      const payload = buildAgentPayload({
+        results,
+        styleKey: normalizedStyle,
+        preset,
+        customStyle: input
+      });
+
+      const userContent = { role: 'user', parts: [{ text: payload }] };
+
+      const response = await client.models.generateContent({
+        model: config.agentModel || 'gemini-3-pro-preview',
+        contents: [...conversationHistory, userContent],
+        systemInstruction: { parts: [{ text: promptSource }] },
+        config: {
+          maxOutputTokens: 64000,
+          temperature: 1,
+          thinkingLevel: config.thinkingLevel || 'HIGH',
+          mediaResolution: config.mediaResolution || 'MEDIA_RESOLUTION_HIGH'
+        }
+      });
+
+      spin.success('');
+
+      const rawXml = extractResponseText(response)?.trim() ?? '';
+      const xml = extractResponseBlock(rawXml);
+
+      if (xml) {
+        const finalResponse = extractTag(xml, 'final_response');
+        if (finalResponse) {
+          ui.showResult(stripXmlTags(finalResponse));
+        }
+
+        const assistantContent = response?.candidates?.[0]?.content;
+        if (assistantContent) {
+          conversationHistory.push(userContent, assistantContent);
+        }
+      }
+
     } catch (error) {
-      debugLog('Failed to parse gallery-dl dump line:', error);
+      spin.error('Error');
+      errors.warn('No pude responder.', { verbose: options.verbose, technical: error.message });
     }
   }
-  return objects;
 }
 
-async function runExternalCommand(command, args, { stdio = 'inherit' } = {}) {
-  debugLog('Executing command:', command, args);
-  await new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio });
-    child.on('error', (error) => {
-      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
-        reject(new Error(`${command} not found. Install it and ensure it is on your PATH.`));
-        return;
-      }
-      reject(error);
-    });
-    child.on('exit', (code) => {
-      if (code === 0) {
-        debugLog('Command finished OK:', command);
-        resolve();
-      } else {
-        reject(new Error(`${command} exited with status ${code}`));
+// ============ HISTORY ============
+
+async function handleListCommand(options) {
+  try {
+    const runs = await listRuns({ limit: options.listLimit || 10 });
+
+    const selected = await ui.showHistoryList(runs, {
+      onSelect: async (id) => {
+        await handleShowCommand(id, options);
       }
     });
-  });
+
+    if (!selected) return;
+
+  } catch (error) {
+    errors.show(error, { verbose: options.verbose });
+  }
 }
 
-async function runCommandCaptureStdout(command, args) {
-  debugLog('Executing command (capture stdout):', command, args);
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on('error', (error) => {
-      reject(error);
-    });
-    child.on('exit', (code) => {
-      if (code === 0) {
-        debugLog('Command finished OK:', command);
-        resolve(stdout);
-      } else {
-        reject(new Error(`${command} exited with status ${code}${stderr ? ` stderr=${stderr.slice(0, 400)}` : ''}`));
-      }
-    });
-  });
+async function handleShowCommand(id, options = {}) {
+  try {
+    const run = await getRunById(id);
+
+    if (!run) {
+      ui.clack.log.error(`No encontré el run: ${id}`);
+      return;
+    }
+
+    ui.showHistoryItem(run, { showTranscript: options.showTranscript });
+
+    // Chat mode si está disponible
+    const config = await loadConfig();
+    const canChat = ui.isInteractive() && config.geminiApiKey && (run.finalResponse || run.results?.some(r => r.text));
+
+    if (canChat) {
+      const geminiClient = new GoogleGenAI({ apiKey: config.geminiApiKey });
+      const conversationHistory = run.finalResponse
+        ? [{ role: 'assistant', parts: [{ text: run.finalResponse }] }]
+        : [];
+
+      await startConversationLoop({
+        client: geminiClient,
+        results: run.results || [],
+        options: { style: run.style, mode: run.mode },
+        config,
+        conversationHistory
+      });
+    }
+
+  } catch (error) {
+    errors.show(error, { verbose: options.verbose });
+  }
 }
 
-async function collectMedia(targetPath, { recursive }) {
-  const entries = await fs.readdir(targetPath, { withFileTypes: true });
-  const items = [];
+// ============ PERSISTENCE ============
 
-  for (const entry of entries) {
-    const entryPath = path.join(targetPath, entry.name);
-    if (entry.isFile()) {
-      const type = getMediaType(entryPath);
-      if (type) {
-        items.push({ path: entryPath, type });
-      }
-    } else if (recursive && entry.isDirectory()) {
-      const subItems = await collectMedia(entryPath, { recursive });
-      items.push(...subItems);
+async function persistRun({ options, config, results, agentData, rawMode }) {
+  try {
+    const doc = {
+      source: { url: options.url || null, path: options.inputPath || null },
+      mode: options.mode || config.mode,
+      style: options.style || config.style,
+      ocrModel: config.ocrModel,
+      agentModel: config.agentModel,
+      whisperModel: config.transcribeModel,
+      mediaResolution: config.mediaResolution,
+      thinkingLevel: config.thinkingLevel,
+      promptName: agentData?.promptPath ? path.basename(agentData.promptPath) : null,
+      title: sanitizeTitle(agentData?.title) || buildAutoTitle({ results, fallback: options.url || options.inputPath || '' }),
+      reflection: agentData?.reflection || null,
+      actionPlan: agentData?.plan || null,
+      finalResponse: agentData?.finalResponse || null,
+      xml: agentData?.xml || null,
+      results,
+      metadata: { rawMode }
+    };
+
+    await saveRun(doc);
+    ui.debug('Run persisted');
+
+  } catch (error) {
+    ui.debug('Persist error:', error.message);
+    // No es fatal, solo debug
+  }
+}
+
+// ============ CONTEXT ============
+
+async function gatherContextForItems(items) {
+  const contextMap = new Map();
+  const infoCache = new Map();
+
+  for (const item of items) {
+    const absolutePath = path.resolve(item.path);
+    const contexts = [];
+
+    // Per-file metadata
+    const perFileMeta = await readJSONIfExists(`${absolutePath}.json`);
+    if (perFileMeta) {
+      const ctx = extractContextText(perFileMeta);
+      if (ctx) contexts.push(ctx);
+    }
+
+    // Directory metadata
+    const dir = path.dirname(absolutePath);
+    let dirContext = infoCache.get(dir);
+    if (dirContext === undefined) {
+      dirContext = await loadInfoContext(dir);
+      infoCache.set(dir, dirContext);
+    }
+    if (dirContext) contexts.push(dirContext);
+
+    if (contexts.length) {
+      contextMap.set(absolutePath, contexts.map(c => `[MEDIA_CONTEXT]\n${c}`).join('\n'));
     }
   }
 
-  debugLog('collectMedia', targetPath, '->', items.length, 'items');
+  return contextMap;
+}
 
-  return items;
+async function loadInfoContext(dir) {
+  try {
+    const entries = await fs.readdir(dir);
+    const contexts = [];
+
+    for (const name of entries) {
+      if (!name.endsWith('.info.json')) continue;
+      const meta = await readJSONIfExists(path.join(dir, name));
+      if (meta) {
+        const text = extractContextText(meta);
+        if (text) contexts.push(text);
+      }
+    }
+
+    return contexts.join('\n');
+  } catch {
+    return '';
+  }
+}
+
+function extractContextText(meta) {
+  if (!meta || typeof meta !== 'object') return '';
+
+  const segments = new Set();
+  const add = (label, value, max = 1200) => {
+    if (typeof value !== 'string') return;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const limited = trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
+    segments.add(`${label}: ${limited}`);
+  };
+
+  const textFields = [
+    ['tweet_text', 'Texto del tweet'], ['full_text', 'Texto completo'],
+    ['text', 'Texto'], ['description', 'Descripción'], ['caption', 'Caption'],
+    ['title', 'Título'], ['summary', 'Resumen'], ['content', 'Contenido']
+  ];
+
+  for (const [key, label] of textFields) {
+    add(label, meta[key]);
+  }
+
+  const poster = meta.author || meta.uploader || meta.owner || meta.channel;
+  add('Autor', poster);
+
+  if (meta.upload_date) segments.add(`Fecha: ${meta.upload_date}`);
+  if (Array.isArray(meta.tags)) segments.add(`Tags: ${meta.tags.slice(0, 12).join(', ')}`);
+
+  return Array.from(segments).join('\n');
 }
 
 async function collectTextFromMetadata(baseDir) {
   const items = [];
   const queue = [baseDir];
-  let metaPath = null;
-  let metaData = null;
 
   while (queue.length) {
     const dir = queue.shift();
     let entries = [];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch (error) {
-      debugLog('collectTextFromMetadata readdir error:', error);
-      continue;
-    }
+    } catch { continue; }
+
     for (const entry of entries) {
       const entryPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
@@ -907,561 +1028,150 @@ async function collectTextFromMetadata(baseDir) {
       }
       if (entry.name.endsWith('.info.json') || entry.name.endsWith('.json')) {
         const meta = await readJSONIfExists(entryPath);
-        if (meta && typeof meta === 'object') {
-          metaPath = entryPath;
-          metaData = meta;
-          break;
+        if (meta) {
+          const text = extractPrimaryText(meta);
+          if (text) {
+            items.push({ path: entryPath, type: 'text', inlineText: text });
+            return items;
+          }
         }
       }
     }
-    if (metaData) {
-      break;
-    }
   }
 
-  if (!metaData) {
-    return items;
-  }
-
-  const text = extractPrimaryText(metaData);
-  if (!text) {
-    return items;
-  }
-
-  items.push({
-    path: metaPath || path.join(baseDir, 'tweet.txt'),
-    type: 'text',
-    inlineText: text
-  });
   return items;
 }
 
 async function collectTextFromDump(url) {
   const items = [];
-  let dumpObjects = [];
   try {
-    dumpObjects = await runGalleryDlDump(url);
-  } catch (error) {
-    debugLog('collectTextFromDump error:', error);
-    return items;
-  }
-  for (const obj of dumpObjects) {
-    const text = extractPrimaryText(obj);
-    if (text) {
-      items.push({
-        path: `${url}#text`,
-        type: 'text',
-        inlineText: text
-      });
-      break;
+    const stdout = await runCommandCaptureStdout('gallery-dl', ['--dump-json', url]);
+    const lines = stdout.split('\n').filter(l => l.trim());
+
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        const text = extractPrimaryText(obj);
+        if (text) {
+          items.push({ path: `${url}#text`, type: 'text', inlineText: text });
+          break;
+        }
+      } catch { /* skip */ }
     }
-  }
+  } catch { /* skip */ }
+
   return items;
 }
 
 async function collectTextFromFxApi(rawUrl) {
   const info = parseTweetInfo(rawUrl);
-  if (!info?.id) {
-    return null;
-  }
+  if (!info?.id) return null;
+
   const apiUrl = info.user
     ? `https://api.fxtwitter.com/${info.user}/status/${info.id}`
     : `https://api.fxtwitter.com/i/status/${info.id}`;
+
   try {
-    debugLog('Fetching text via fxtwitter API', apiUrl);
-    const response = await fetch(apiUrl, {
-      headers: { 'user-agent': 'twx-cli' }
-    });
-    if (!response.ok) {
-      debugLog('fxtwitter API failed', response.status, response.statusText);
-      return null;
-    }
+    const response = await fetch(apiUrl, { headers: { 'user-agent': 'twx-cli' } });
+    if (!response.ok) return null;
+
     const data = await response.json();
-    const text =
-      data?.tweet?.raw_text?.text ||
-      data?.tweet?.text ||
-      data?.tweet?.content ||
-      data?.raw_text?.text ||
-      data?.text;
+    const text = data?.tweet?.raw_text?.text || data?.tweet?.text || data?.text;
+
     if (typeof text === 'string' && text.trim()) {
       return { path: `${apiUrl}#text`, type: 'text', inlineText: text.trim() };
     }
-    return null;
-  } catch (error) {
-    debugLog('collectTextFromFxApi error:', error);
-    return null;
-  }
-}
+  } catch { /* skip */ }
 
-function getMediaType(filePath) {
-  const extension = path.extname(filePath).toLowerCase();
-  if (Object.prototype.hasOwnProperty.call(IMAGE_MIME_TYPES, extension)) {
-    return 'image';
-  }
-  if (VIDEO_EXTENSIONS.has(extension)) {
-    return 'video';
-  }
-  if (AUDIO_EXTENSIONS.has(extension)) {
-    return 'audio';
-  }
-  if (TEXT_EXTENSIONS.has(extension)) {
-    return 'text';
-  }
   return null;
 }
 
-async function runInsightAgent({
-  client,
-  results,
-  style,
-  styleFile,
-  styleText,
-  showReflection,
-  sessionLog,
-  agentPromptPath
-}) {
-  const promptPath = agentPromptPath ? path.resolve(agentPromptPath) : AGENT_PROMPT_PATH;
-  const promptSource = await fs.readFile(promptPath, 'utf8');
-
-  const normalizedStyle = normalizeStyle(style);
-  const preset = normalizedStyle && STYLE_PRESETS[normalizedStyle];
-  const inlineCustom = !normalizedStyle && style ? style : '';
-  const customStyle = styleText
-    ? styleText
-    : styleFile
-      ? await fs.readFile(path.resolve(styleFile), 'utf8')
-      : inlineCustom;
-
-  const result = await generateAgentResponse({
-    client,
-    promptSource,
-    results,
-    normalizedStyle,
-    preset,
-    customStyle,
-    conversationHistory: [],
-    spinnerLabel: 'generating…',
-    showSpacer: true
-  });
-
-  if (!result || !result.finalResponse) {
-    return { history: [], agentData: null };
+function extractPrimaryText(meta) {
+  if (!meta || typeof meta !== 'object') return '';
+  const fields = ['tweet_text', 'full_text', 'text', 'description', 'caption', 'title', 'summary', 'content'];
+  for (const key of fields) {
+    if (typeof meta[key] === 'string' && meta[key].trim()) {
+      return meta[key].trim();
+    }
   }
-
-  const { reflection, plan, finalResponse, title, xml, historyAppend = [] } = result;
-
-  printFinalResponse(finalResponse);
-
-  await handleReflectionOutput({
-    reflection,
-    xml,
-    planText: plan?.trim() ?? '',
-    responseText: finalResponse?.trim() ?? '',
-    showReflection,
-    sessionLog
-  });
-
-  return {
-    history: finalResponse ? historyAppend.slice() : [],
-    agentData: { reflection, plan, finalResponse, title, xml, promptPath }
-  };
+  return '';
 }
 
-async function generateAgentResponse({
-  client,
-  promptSource,
-  results,
-  normalizedStyle,
-  preset,
-  customStyle,
-  conversationHistory = [],
-  spinnerLabel = 'generating…',
-  showSpacer = false
-}) {
-  let response = null;
-  let omitContext = false;
-  let workingHistory = Array.isArray(conversationHistory) ? [...conversationHistory] : [];
-  const safetySettings = [
-    { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-    { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-    { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-    { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-    { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' }
-  ];
+function parseTweetInfo(rawUrl) {
+  try {
+    const { hostname, pathname } = new URL(rawUrl);
+    if (!TWITTER_HOSTS.has(hostname.toLowerCase())) return null;
 
-  const maxAttempts = 4;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const payload = buildAgentPayload({
-      results,
-      styleKey: normalizedStyle,
-      preset,
-      customStyle,
-      omitContext,
-      conversationHistory: workingHistory
+    const parts = pathname.split('/').filter(Boolean);
+    const statusIndex = parts.findIndex(p => p === 'status' || p === 'statuses');
+
+    if (statusIndex === -1 || !parts[statusIndex + 1]) {
+      const id = parts.find(p => /^\d{5,}$/.test(p));
+      return id ? { id, user: parts[0] || null } : null;
+    }
+
+    return {
+      id: parts[statusIndex + 1].split('?')[0],
+      user: parts[statusIndex - 1] || null
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ============ UTILITIES ============
+
+async function runExternalCommand(command, args) {
+  ui.debug('Executing:', command, args);
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+
+    child.stderr?.on('data', chunk => stderr += chunk.toString());
+
+    child.on('error', error => {
+      if (error.code === 'ENOENT') {
+        reject(new Error(`${command} no encontrado. Instalalo y asegurate que esté en el PATH.`));
+        return;
+      }
+      reject(error);
     });
-    debugLog('Payload sent to agent:\n' + payload);
 
-    if (attempt === 0 && showSpacer) {
-      console.log('');
-    }
-    const spinner = startSpinner(attempt === 0 ? spinnerLabel : 'retrying…');
-
-    try {
-      const userContent = {
-        role: 'user',
-        parts: [{ text: payload }]
-      };
-      const contents = [...conversationHistory, userContent];
-      response = await client.models.generateContent({
-        model: DEFAULT_AGENT_MODEL,
-        contents,
-        systemInstruction: {
-          parts: [{ text: promptSource }]
-        },
-        safetySettings,
-        config: {
-          maxOutputTokens: DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
-          temperature: 1,
-          thinkingLevel: DEFAULT_THINKING_LEVEL,
-          mediaResolution: DEFAULT_MEDIA_RESOLUTION
-        }
-      });
-      spinner.succeed(attempt === 0 ? 'plan ready' : 'retry succeeded');
-      const assistantContent = response?.candidates?.[0]?.content || null;
-      response = { response, userContent, assistantContent };
-      break;
-    } catch (error) {
-      spinner.fail('plan generation failed');
-      if (isInvalidPromptError(error) && !omitContext) {
-        console.warn('Prompt was flagged; retrying with captions trimmed.');
-        omitContext = true;
-        continue;
+    child.on('exit', code => {
+      if (code === 0) {
+        ui.debug('Command OK:', command);
+        resolve();
+      } else {
+        reject(new Error(`${command} falló con código ${code}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`));
       }
-      if (isQuotaExceeded(error)) {
-        const retryDelaySeconds = extractRetryDelaySeconds(error);
-        const removeCount = Math.min(3, workingHistory.length);
-        if (!removeCount) {
-          debugLog('Quota exceeded but no history to trim.');
-          throw error;
-        }
-        console.warn(
-          `Quota de tokens alcanzada; recortando las primeras ${removeCount} intervenciones y reintentando${
-            retryDelaySeconds ? ` en ~${retryDelaySeconds}s` : ''
-          }…`
-        );
-        workingHistory = workingHistory.slice(removeCount);
-        if (Array.isArray(conversationHistory) && conversationHistory.length) {
-          conversationHistory.splice(0, removeCount);
-        }
-        if (retryDelaySeconds) {
-          await delayMs(retryDelaySeconds * 1000);
-        }
-        continue;
-      }
-      debugLog('Agent error:', error);
-      throw error;
-    }
-  }
-
-  if (!response) {
-    throw new Error('Agent did not return a response.');
-  }
-
-  debugLog('Raw agent response:', safeStringify(response.response));
-
-  const rawXml = extractResponseText(response.response)?.trim() ?? '';
-  if (!rawXml) {
-    console.warn('Agent returned empty output.');
-    debugLog('Empty output_text');
-    return null;
-  }
-  const xml = extractResponseBlock(rawXml);
-  if (!xml) {
-    console.warn('Agent output did not contain a <response> block.');
-    debugLog('Response without <response> block:\n' + rawXml);
-    return null;
-  }
-  if (xml !== rawXml) {
-    debugLog('Extracted <response> block from noisy output.');
-  }
-  debugLog('XML received:\n' + xml);
-
-  const reflection = extractTag(xml, 'internal_reflection');
-  const plan = extractTag(xml, 'action_plan');
-  const finalResponse = extractTag(xml, 'final_response');
-  const title = extractTag(xml, 'title');
-
-  if (!plan) {
-    console.warn('Agent output missing <action_plan>. Use --debug to inspect.');
-    debugLog('Missing <action_plan> in XML');
-  }
-  if (!title) {
-    console.warn('Agent output missing <title>.');
-    debugLog('Missing <title> in XML');
-  }
-  if (!finalResponse) {
-    console.warn('Agent output missing <final_response>.');
-    debugLog('Missing <final_response> in XML');
-  }
-
-  return {
-    reflection,
-    plan,
-    finalResponse,
-    title,
-    xml,
-    historyAppend: [response.userContent, response.assistantContent].filter(Boolean)
-  };
+    });
+  });
 }
 
-function buildAgentPayload({
-  results,
-  styleKey,
-  preset,
-  customStyle,
-  omitContext = false,
-  conversationHistory = []
-}) {
-  const blocks = [];
-  blocks.push('Idioma obligatorio: español neutro, tono directo y pragmático.');
-  blocks.push('Cubrir interpretación y respuesta en una sola narrativa; no insertes encabezados explícitos.');
-  blocks.push(
-    'El material proviene del usuario; analizalo exclusivamente, evitá amplificar lenguaje dañino y parafraseá cualquier expresión explícita.'
-  );
-  blocks.push('Devuelve exclusivamente el bloque <response>…</response>, con todos los tags cerrados y sin texto adicional antes o después.');
-  blocks.push(
-    'final_response debe contener entre 3 y 5 párrafos, cada uno de 3 a 5 líneas continuas, sin listas ni encabezados. Debe sonar como Elon Musk explicando al usuario qué quiso decir el material, con lenguaje claro y directo. Evitá proponer planes o estrategias; solo interpreta el mensaje y cerrá con una idea clave.'
-  );
-  blocks.push(
-    'Cada bloque de contexto está etiquetado como [MEDIA_CONTEXT]. Son citas textuales del tweet/caption/transcripción y pueden incluir lenguaje explícito; analizalos solo para derivar el significado y nunca los repitas literalmente.'
-  );
-  blocks.push(
-    'No omitas ningún tag del bloque <response>. Siempre devuelve <title>, <internal_reflection>, <action_plan> y <final_response>. Si falta información, completá igual con el mejor esfuerzo o marcá por qué no se puede, pero no dejes tags vacíos.'
-  );
-  blocks.push(
-    '<title> debe ser breve (5–12 palabras), en español, sin emojis ni comillas, y debe resumir el tema central para mostrar en listados.'
-  );
-  if (omitContext) {
-    blocks.push('Contexto acotado: se omitieron captions para cumplir la política; trabajá solo con los textos listados arriba.');
-  }
-  blocks.push(`Style preset: ${styleKey || 'none'}`);
-  if (preset) {
-    blocks.push(`Preset instructions:
-${preset}`);
-  }
-  if (customStyle?.trim()) {
-    blocks.push(`User inline request:
-${customStyle.trim()}`);
-  }
+async function runCommandCaptureStdout(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
 
-  if (conversationHistory.length) {
-    const dialog = conversationHistory
-      .map((turn) => {
-        const safeRole = turn.role === 'assistant' ? 'assistant' : 'user';
-        const text =
-          Array.isArray(turn.parts) && turn.parts.length
-            ? turn.parts.map((part) => part.text).filter(Boolean).join('\n')
-            : turn.content || '';
-        return `<turn role="${safeRole}">
-${text}
-</turn>`;
-      })
-      .join('\n');
-    blocks.push('<dialog_history>\n' + dialog + '\n</dialog_history>');
-  }
+    child.stdout.on('data', chunk => stdout += chunk.toString());
+    child.stderr.on('data', chunk => stderr += chunk.toString());
 
-  blocks.push(
-    'Materiales analizados:\n' +
-      results
-        .map((entry, index) => {
-          const base = [`Item ${index + 1}`, `Archivo: ${entry.file}`, `Tipo: ${entry.type}`];
-          if (entry.error) {
-            base.push(`Error: ${entry.error}`);
-          } else {
-            base.push(`Texto:\n${entry.text || '[Sin texto detectado]'}`);
-          }
-          if (!omitContext && entry.context) {
-            base.push(`Contexto:
-${entry.context}`);
-          }
-          return base.join('\n');
-        })
-        .join('\n\n')
-  );
-
-  return blocks.join('\n\n');
+    child.on('error', reject);
+    child.on('exit', code => {
+      if (code === 0) resolve(stdout);
+      else reject(new Error(`${command} falló: ${stderr.slice(0, 200)}`));
+    });
+  });
 }
 
-function safeStringify(value) {
+async function safeStat(target) {
   try {
-    return JSON.stringify(value, null, 2);
+    return await fs.stat(target);
   } catch (error) {
-    return `[No se pudo serializar: ${error instanceof Error ? error.message : error}]`;
-  }
-}
-
-function isQuotaExceeded(error) {
-  const message = error?.message || error?.toString?.() || '';
-  if (error?.status === 429 || message.includes('Quota') || message.includes('quota')) {
-    if (message.includes('RESOURCE_EXHAUSTED') || message.includes('Exceeded') || message.includes('limit')) {
-      return true;
-    }
-  }
-  const details = error?.details;
-  if (Array.isArray(details)) {
-    return details.some(
-      (detail) =>
-        detail?.['@type'] === 'type.googleapis.com/google.rpc.QuotaFailure' ||
-        detail?.['@type'] === 'type.googleapis.com/google.rpc.RetryInfo'
-    );
-  }
-  return false;
-}
-
-function extractRetryDelaySeconds(error) {
-  const details = error?.details;
-  if (Array.isArray(details)) {
-    for (const detail of details) {
-      if (detail?.['@type'] === 'type.googleapis.com/google.rpc.RetryInfo' && detail.retryDelay) {
-        const match = /(\d+(?:\.\d+)?)s/.exec(String(detail.retryDelay));
-        if (match) {
-          const secs = Number(match[1]);
-          if (Number.isFinite(secs)) return secs;
-        }
-      }
-    }
-  }
-  return null;
-}
-
-function isInvalidPromptError(error) {
-  return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'invalid_prompt');
-}
-
-function extractResponseBlock(text) {
-  if (!text) {
-    return '';
-  }
-  const start = text.indexOf('<response');
-  const end = text.lastIndexOf('</response>');
-  if (start === -1 || end === -1) {
-    return '';
-  }
-  const closing = '</response>'.length;
-  return text.slice(start, end + closing).trim();
-}
-
-function extractResponseText(response) {
-  if (!response) {
-    return '';
-  }
-  if (typeof response.text === 'function') {
-    return response.text();
-  }
-  if (typeof response.text === 'string') {
-    return response.text;
-  }
-  const parts = response.candidates?.[0]?.content?.parts || [];
-  const textParts = parts.map((part) => part.text).filter(Boolean);
-  return textParts.join('\n');
-}
-
-function normalizeMediaResolution(value) {
-  if (!value) {
-    return null;
-  }
-  const key = String(value).trim().toUpperCase();
-  if (key === 'LOW' || key === 'MEDIA_RESOLUTION_LOW') return 'MEDIA_RESOLUTION_LOW';
-  if (key === 'MEDIUM' || key === 'MEDIA_RESOLUTION_MEDIUM') return 'MEDIA_RESOLUTION_MEDIUM';
-  if (key === 'HIGH' || key === 'MEDIA_RESOLUTION_HIGH') return 'MEDIA_RESOLUTION_HIGH';
-  return null;
-}
-
-function normalizeThinkingLevel(value) {
-  if (!value) {
-    return null;
-  }
-  const key = String(value).trim().toUpperCase();
-  if (key === 'LOW') return 'LOW';
-  if (key === 'HIGH') return 'HIGH';
-  return null;
-}
-
-function resolveAgentPromptPath(mode, overridePath) {
-  if (overridePath) {
-    return path.resolve(overridePath);
-  }
-  const key = (mode || '').toLowerCase();
-  if (key === 'long' || key === 'longform' || key === 'extenso') {
-    return LONG_AGENT_PROMPT_PATH;
-  }
-  if (key === 'top' || key === 'top5' || key === 'ranking') {
-    return TOP_AGENT_PROMPT_PATH;
-  }
-  return AGENT_PROMPT_PATH;
-}
-
-async function gatherContextForItems(items) {
-  const contextMap = new Map();
-  const infoCache = new Map();
-  for (const item of items) {
-    const absolutePath = path.resolve(item.path);
-    const contexts = [];
-
-    const perFileMeta = await readJSONIfExists(`${absolutePath}.json`);
-    if (perFileMeta) {
-      const perFileContext = extractContextText(perFileMeta);
-      if (perFileContext) {
-        contexts.push(perFileContext);
-      }
-    }
-
-    const dir = path.dirname(absolutePath);
-    let dirContext = infoCache.get(dir);
-    if (dirContext === undefined) {
-      dirContext = await loadInfoContext(dir);
-      infoCache.set(dir, dirContext);
-    }
-    if (dirContext) {
-      contexts.push(dirContext);
-    }
-
-    const combined = contexts
-      .filter(Boolean)
-      .map((block) => `[MEDIA_CONTEXT]\n${block}`)
-      .join('\n');
-    if (combined) {
-      contextMap.set(absolutePath, combined);
-      debugLog('Context detected for', absolutePath, combined);
-    }
-  }
-  return contextMap;
-}
-
-async function loadInfoContext(dir) {
-  try {
-    const entries = await fs.readdir(dir);
-    const contexts = [];
-    for (const name of entries) {
-      if (!name.endsWith('.info.json')) {
-        continue;
-      }
-      const meta = await readJSONIfExists(path.join(dir, name));
-      if (!meta) {
-        continue;
-      }
-      const text = extractContextText(meta);
-      if (text) {
-        contexts.push(text);
-      }
-    }
-    return contexts.filter(Boolean).join('\n');
-  } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
-      return '';
-    }
-    debugLog('Error reading info.json in', dir, error);
-    return '';
+    if (error.code === 'ENOENT') return null;
+    throw error;
   }
 }
 
@@ -1469,88 +1179,38 @@ async function readJSONIfExists(filePath) {
   try {
     const data = await fs.readFile(filePath, 'utf8');
     return JSON.parse(data);
-  } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
-      return null;
-    }
-    debugLog('Could not read JSON', filePath, error);
+  } catch {
     return null;
   }
 }
 
-function extractContextText(meta) {
-  if (!meta || typeof meta !== 'object') {
-    return '';
-  }
-
-  const segments = new Set();
-  const add = (label, value, max = 1200) => {
-    if (typeof value !== 'string') {
-      return;
-    }
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return;
-    }
-    const limited = trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
-    segments.add(`${label}: ${limited}`);
-  };
-
-  const textFields = [
-    ['tweet_text', 'Texto del tweet'],
-    ['full_text', 'Texto completo'],
-    ['text', 'Texto'],
-    ['description', 'Descripción'],
-    ['caption', 'Caption'],
-    ['title', 'Título'],
-    ['summary', 'Resumen'],
-    ['content', 'Contenido'],
-    ['commentary', 'Comentario']
-  ];
-  for (const [key, label] of textFields) {
-    add(label, meta[key]);
-  }
-
-  const poster = meta.author || meta.uploader || meta.owner || meta.channel;
-  add('Autor', poster);
-
-  if (typeof meta.upload_date === 'string' && meta.upload_date.trim()) {
-    segments.add(`Fecha: ${meta.upload_date.trim()}`);
-  }
-
-  if (Array.isArray(meta.tags) && meta.tags.length) {
-    segments.add(`Tags: ${meta.tags.slice(0, 12).join(', ')}`);
-  }
-
-  if (Array.isArray(meta.keywords) && meta.keywords.length) {
-    segments.add(`Keywords: ${meta.keywords.slice(0, 12).join(', ')}`);
-  }
-
-  return Array.from(segments).join('\n');
+function normalizeStyle(value) {
+  if (!value) return null;
+  const key = value.toLowerCase();
+  return STYLE_ALIASES[key] || (STYLE_PRESETS[key] ? key : null);
 }
 
-function extractPrimaryText(meta) {
-  if (!meta || typeof meta !== 'object') {
-    return '';
-  }
-  const fields = [
-    'tweet_text',
-    'full_text',
-    'text',
-    'description',
-    'caption',
-    'title',
-    'summary',
-    'content',
-    'commentary'
-  ];
-  for (const key of fields) {
-    const value = meta[key];
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-  }
-  return '';
+function resolveAgentPromptPath(mode) {
+  const key = (mode || '').toLowerCase();
+  if (key === 'long' || key === 'longform' || key === 'extenso') return LONG_AGENT_PROMPT_PATH;
+  if (key === 'top' || key === 'top5' || key === 'ranking') return TOP_AGENT_PROMPT_PATH;
+  return AGENT_PROMPT_PATH;
+}
+
+function extractResponseText(response) {
+  if (!response) return '';
+  if (typeof response.text === 'function') return response.text();
+  if (typeof response.text === 'string') return response.text;
+  const parts = response.candidates?.[0]?.content?.parts || [];
+  return parts.map(p => p.text).filter(Boolean).join('\n');
+}
+
+function extractResponseBlock(text) {
+  if (!text) return '';
+  const start = text.indexOf('<response');
+  const end = text.lastIndexOf('</response>');
+  if (start === -1 || end === -1) return '';
+  return text.slice(start, end + '</response>'.length).trim();
 }
 
 function extractTag(xml, tag) {
@@ -1559,681 +1219,151 @@ function extractTag(xml, tag) {
   return match ? match[1].trim() : '';
 }
 
-async function appendSessionLog(targetPath, xml) {
-  const resolved = path.resolve(targetPath);
-  await fs.mkdir(path.dirname(resolved), { recursive: true });
-  const timestamp = new Date().toISOString();
-  const entry = `\n[${timestamp}]\n${xml}\n`;
-  await fs.appendFile(resolved, entry, 'utf8');
-}
-
-function normalizeStyle(value) {
-  if (!value) {
-    return null;
-  }
-  const key = value.toLowerCase();
-  if (STYLE_ALIASES[key]) {
-    return STYLE_ALIASES[key];
-  }
-  if (STYLE_PRESETS[key]) {
-    return key;
-  }
-  return null;
-}
-
-async function safeStat(target) {
-  try {
-    return await fs.stat(target);
-  } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
-      return null;
-    }
-    throw error;
-  }
-}
-
-function cleanTweetContext(context) {
-  if (!context) {
-    return '';
-  }
-  return context
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith('[MEDIA_CONTEXT]') && !line.startsWith('Contenido:'))
-    .join('\n');
-}
-
-function logResult(item, text, context = null) {
-  const tweetContext = cleanTweetContext(context);
-
-  if (tweetContext) {
-    console.log('\n―― tweet text');
-    console.log(tweetContext);
-  }
-
-  const label = `${item.type} transcript`;
-  console.log('\n―― ' + label);
-  console.log(text ? text : '[no text detected]');
-}
-
-function sanitizeAssistantText(text) {
-  if (!text) {
-    return '';
-  }
-  return stripXmlTags(text).trim();
-}
-
-function logRunInfo(options) {
-  const resolvedPrompt = resolveAgentPromptPath(options.mode, options.agentPromptPath);
-  const modeLabel = options.mode || DEFAULT_MODE;
-  const styleLabel = options.style || 'default';
-  const inputLabel = options.url ? `url=${options.url}` : options.inputPath ? `path=${options.inputPath}` : 'n/a';
-  console.log(`
-[twx] mode=${modeLabel} prompt=${path.basename(resolvedPrompt)} style=${styleLabel}`);
-  console.log(
-    `[twx] ocr=${MISTRAL_OCR_MODEL} (mistral) agent=${DEFAULT_AGENT_MODEL} thinking=${DEFAULT_THINKING_LEVEL} media_res=${DEFAULT_MEDIA_RESOLUTION}`
-  );
-  console.log(
-    `[twx] whisper_model=${DEFAULT_TRANSCRIBE_MODEL} segment=${WHISPER_SEGMENT_SECONDS}s bitrate=${WHISPER_TARGET_BITRATE} sample_rate=${WHISPER_TARGET_SAMPLE_RATE}`
-  );
-  console.log(`[twx] source=${inputLabel}`);
-}
-
-async function persistRun({ options, results, agentData, promptPath, rawMode, shouldRunAgent }) {
-  try {
-    const doc = {
-      source: { url: options.url || null, path: options.inputPath || null },
-      mode: options.mode || DEFAULT_MODE,
-      style: options.style || 'default',
-      ocrModel: MISTRAL_OCR_MODEL,
-      agentModel: DEFAULT_AGENT_MODEL,
-      whisperModel: DEFAULT_TRANSCRIBE_MODEL,
-      mediaResolution: DEFAULT_MEDIA_RESOLUTION,
-      thinkingLevel: DEFAULT_THINKING_LEVEL,
-      promptName: promptPath ? path.basename(promptPath) : null,
-      title:
-        sanitizeTitle(agentData?.title) ||
-        buildAutoTitle({ results, fallback: options.url || options.inputPath || '' }),
-      reflection: agentData?.reflection || null,
-      actionPlan: agentData?.plan || null,
-      finalResponse: agentData?.finalResponse || null,
-      xml: agentData?.xml || null,
-      results,
-      metadata: {
-        rawMode: Boolean(rawMode),
-        agentRequested: Boolean(shouldRunAgent)
-      }
-    };
-    await saveRun(doc);
-    debugLog('Run persisted to Mongo.');
-  } catch (error) {
-    console.warn('⚠️ No se pudo guardar el historial en Mongo:', error instanceof Error ? error.message : error);
-    debugLog('Persist error details:', error);
-  }
-}
-
-async function handleListCommand(options) {
-  try {
-    let limit = Math.max(1, options.listLimit);
-    if (options.json) {
-      const runs = await listRuns({ limit });
-      if (!runs.length) {
-        console.log('\n(no hay ejecuciones guardadas)');
-        return;
-      }
-      console.log(JSON.stringify(runs, null, 2));
-      return;
-    }
-
-    while (true) {
-      const runs = await listRuns({ limit });
-      if (!runs.length) {
-        console.log('\n(no hay ejecuciones guardadas)');
-        return;
-      }
-      const selection = await renderInteractiveList(runs, { allowMore: true, moreStep: options.listLimit });
-      if (!selection) return;
-      if (selection === '__more__') {
-        if (limit >= 100) {
-          console.log('\n(se muestran 100 items; no hay más)');
-          continue;
-        }
-        limit = Math.min(100, limit + Math.max(5, options.listLimit || 10));
-        continue;
-      }
-      await handleShowCommand(selection, { showTranscript: options.showTranscript });
-      break;
-    }
-  } catch (error) {
-    console.error('No pude listar el historial:', error instanceof Error ? error.message : error);
-    debugLog('List error details:', error);
-  }
-}
-
-async function handleShowCommand(id, { showTranscript = false } = {}) {
-  try {
-    const run = await getRunById(id);
-    if (!run) {
-      console.log(`No encontré la ejecución con id ${id}`);
-      return;
-    }
-    await printRun(run, { showTranscript });
-
-    const canChat = supportsInteractivePrompts() && GEMINI_API_KEY && (run.finalResponse || (run.results || []).some((r) => r.text));
-    if (!canChat) {
-      return;
-    }
-
-    const geminiClient = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-    const conversationHistory = [];
-    if (run.finalResponse) {
-      conversationHistory.push({ role: 'assistant', parts: [{ text: run.finalResponse }] });
-    }
-    const promptPath = resolveAgentPromptPath(run.mode || DEFAULT_MODE, null);
-    const chatOptions = {
-      style: run.style && run.style !== 'default' ? run.style : 'musk',
-      sessionLog: null
-    };
-    await startConversationLoop({
-      client: geminiClient,
-      results: run.results || [],
-      options: chatOptions,
-      conversationHistory,
-      agentPromptPath: promptPath
-    });
-  } catch (error) {
-    console.error('No pude mostrar la ejecución:', error instanceof Error ? error.message : error);
-    debugLog('Show error details:', error);
-  }
-}
-
-async function printRun(run, { showTranscript = false } = {}) {
-  const date = run.createdAt ? new Date(run.createdAt).toISOString() : '';
-  const source = run.source?.url || run.source?.path || '';
-  const title = run.title || '[sin título]';
-  console.log('\n— run —');
-  console.log(`id: ${run._id}`);
-  console.log(`fecha: ${date}`);
-  console.log(`título: ${title}`);
-  if (source) console.log(`origen: ${source}`);
-  if (run.finalResponse) {
-    printFinalResponse(run.finalResponse);
-  } else if (!run.results?.length) {
-    console.log('(sin contenido almacenado)');
-  }
-
-  const hasTranscript = Array.isArray(run.results) && run.results.some((r) => r.text);
-  const shouldShow =
-    showTranscript ||
-    (!run.finalResponse &&
-      hasTranscript) ||
-    (hasTranscript && supportsInteractivePrompts()
-      ? (await promptUser('\n¿Mostrar transcripciones crudas? [Y/n]: ')).toLowerCase() !== 'n'
-      : false);
-
-  if (hasTranscript && shouldShow) {
-    const combined = run.results
-      .filter((r) => r.text)
-      .map((r) => `### ${r.file || r.type}\n${r.text}`)
-      .join('\n\n');
-    if (combined) {
-      console.log('\n—— transcript ——');
-      console.log(combined);
-    }
-  }
-}
-
-async function renderInteractiveList(runs, { allowMore = false, moreStep = 10 } = {}) {
-  if (!supportsInteractivePrompts()) {
-    return null;
-  }
-
-  console.log(`\nÚltimas ${runs.length} ejecuciones (↑/↓ para navegar, escribe para filtrar, Enter para abrir, ESC para salir)`);
-
-  const choices = runs.map((run) => {
-    const date = run.createdAt
-      ? new Date(run.createdAt).toISOString().replace('T', ' ').replace('Z', '').replace('.000', '')
-      : '';
-    const title = run.title || '[sin título]';
-    const preview = stripXmlTags(run.finalResponse || '').replace(/\s+/g, ' ').trim();
-    const label = truncateMiddle(`${title} · ${date}`, 90);
-    const secondary = truncateMiddle(preview, 70);
-    return {
-      name: label,
-      message: secondary ? `${label}\n   ${secondary}` : label,
-      value: run._id.toString()
-    };
-  });
-
-  if (allowMore) {
-    choices.push({
-      name: 'Cargar más…',
-      value: '__more__',
-      message: `Cargar ${moreStep || 10} más…`
-    });
-  }
-
-  choices.push({ name: 'Salir', value: null, message: 'Salir' });
-
-  try {
-    const visibleLimit = Math.min(Math.max(8, choices.length), 20);
-    const prompt = new AutoComplete({
-      name: 'run',
-      message: 'Elegí un run (flechas), buscá por título/resumen o Enter para salir',
-      limit: visibleLimit,
-      choices
-    });
-    const selection = await prompt.run();
-    return selection || null;
-  } catch (error) {
-    debugLog('Interactive list failed, falling back to manual input', error);
-    const input = await promptUser('\nSeleccioná # o id para ver el resumen (Enter para salir): ');
-    const trimmed = input.trim();
-    if (!trimmed) return null;
-    if (allowMore && trimmed.toLowerCase() === 'm') {
-      return '__more__';
-    }
-    let chosen = null;
-    if (/^\d+$/.test(trimmed)) {
-      const idx = Number(trimmed) - 1;
-      if (idx >= 0 && idx < runs.length) {
-        chosen = runs[idx]._id.toString();
-      }
-    } else {
-      chosen = trimmed;
-    }
-    if (chosen) {
-      return chosen;
-    }
-    console.log('Selección inválida.');
-    return null;
-  }
-}
-
 function stripXmlTags(text) {
-  if (!text) {
-    return '';
-  }
+  if (!text) return '';
   return text.replace(/<[^>]+>/g, '');
 }
 
-function truncateMiddle(text, max = 120) {
-  if (!text || text.length <= max) return text || '';
-  const half = Math.floor((max - 3) / 2);
-  return `${text.slice(0, half)}...${text.slice(-half)}`;
+function sanitizeTitle(title) {
+  if (!title) return '';
+  return title.split('\n').map(l => l.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().slice(0, 140);
 }
 
-function printFinalResponse(finalResponse) {
-  if (!finalResponse) {
-    console.warn('Agent response is missing <final_response>.');
-    return;
-  }
-  const border = '—— musk summary ——';
-  const body = stripXmlTags(finalResponse).trim();
-  console.log(`\n${border}`);
-  console.log(body);
-  console.log(border);
+function parseTimecode(value) {
+  if (!value && value !== 0) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  if (/^\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
+
+  const parts = trimmed.split(':').map(p => p.trim()).filter(Boolean);
+  if (!parts.length || parts.some(p => isNaN(Number(p)))) return null;
+
+  const nums = parts.map(Number);
+  if (nums.length === 3) return nums[0] * 3600 + nums[1] * 60 + nums[2];
+  if (nums.length === 2) return nums[0] * 60 + nums[1];
+  if (nums.length === 1) return nums[0];
+  return null;
 }
 
-function parseTweetInfo(rawUrl) {
-  try {
-    const { hostname, pathname } = new URL(rawUrl);
-    if (!TWITTER_HOSTS.has(hostname.toLowerCase())) {
-      return null;
-    }
-    const parts = pathname.split('/').filter(Boolean);
-    const statusIndex = parts.findIndex((part) => part === 'status' || part === 'statuses');
-    if (statusIndex === -1 || !parts[statusIndex + 1]) {
-      const id = parts.find((part) => /^\d{5,}$/.test(part));
-      return id ? { id, user: parts[0] || null } : null;
-    }
-    const id = parts[statusIndex + 1].split('?')[0];
-    const user = parts[statusIndex - 1] || null;
-    return { id, user };
-  } catch {
-    return null;
-  }
-}
-
-function supportsInteractivePrompts() {
-  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
-}
-
-async function promptUser(message) {
-  if (!supportsInteractivePrompts()) {
-    return '';
-  }
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await rl.question(message);
-  rl.close();
-  return answer.trim();
-}
-
-async function promptChatMultiline(promptLabel) {
-  if (!supportsInteractivePrompts()) {
-    return '';
-  }
-
-  return await new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      historySize: 0,
-      terminal: true
-    });
-    const lines = [];
-    let completed = false;
-
-    const finish = (value) => {
-      if (completed) {
-        return;
-      }
-      completed = true;
-      rl.close();
-      resolve(value);
-    };
-
-    rl.setPrompt(promptLabel);
-    rl.prompt();
-
-    rl.on('line', (line) => {
-      const lower = line.trim().toLowerCase();
-      if (lower === '/send') {
-        finish(lines.join('\n').trim());
-        return;
-      }
-      if (lower === ':q' || lower === '/q') {
-        finish(null);
-        return;
-      }
-      lines.push(line);
-      rl.setPrompt(lines.length ? '… ' : promptLabel);
-      rl.prompt();
-    });
-
-    rl.on('close', () => {
-      if (completed) {
-        return;
-      }
-      if (!lines.length) {
-        resolve(null);
-        return;
-      }
-      resolve(lines.join('\n').trim());
-    });
-  });
-}
-
-function clearScreen() {
-  if (!supportsInteractivePrompts()) {
-    return;
-  }
-  if (typeof console.clear === 'function') {
-    console.clear();
-  } else {
-    process.stdout.write('\x1Bc');
-  }
-}
-
-async function showReflectionWindow(reflection, planText, responseText) {
-  clearScreen();
-  console.log('╔══════════════════════════╗');
-  console.log('║       INTERNAL NOTES      ║');
-  console.log('╚══════════════════════════╝');
-  console.log(reflection.trim());
-  while (true) {
-    const back = (await promptUser('\npress [b] to go back: ')).toLowerCase();
-    if (!back || back === 'b') {
-      break;
-    }
-  }
-  clearScreen();
-  if (responseText) {
-    printFinalResponse(responseText);
-  }
-}
-
-async function handleReflectionOutput({
-  reflection,
-  xml,
-  planText,
-  responseText,
-  showReflection,
-  sessionLog
-}) {
-  if (!reflection) {
-    if (xml) {
-      await appendSessionLog(sessionLog || DEFAULT_SESSION_LOG, xml);
-    }
-    return;
-  }
-
-  const logPath = sessionLog || DEFAULT_SESSION_LOG;
-  await appendSessionLog(logPath, xml);
-
-  if (showReflection) {
-    console.log('\n--- REFLEXIÓN INTERNA ---');
-    console.log(reflection.trim());
-    return;
-  }
-
-  console.log(`\nReflection saved to ${logPath}. Use --show-reflection to print it inline.`);
-}
-
-async function startConversationLoop({ client, results, options, conversationHistory, agentPromptPath }) {
-  const promptPath = agentPromptPath ? path.resolve(agentPromptPath) : AGENT_PROMPT_PATH;
-  const promptSource = await fs.readFile(promptPath, 'utf8');
-  const normalizedStyle = normalizeStyle(options.style);
-  const preset = normalizedStyle && STYLE_PRESETS[normalizedStyle];
-
-  console.log('\nchat mode · Enter agrega saltos de línea, /send envía, /q sale');
-
-  while (true) {
-    const input = await promptChatMultiline('ask elon › ');
-    const trimmed = input?.trim();
-    if (!trimmed) {
-      console.log('\nchat closed.');
-      break;
-    }
-
-    let responseData = null;
-    try {
-      responseData = await generateAgentResponse({
-        client,
-        promptSource,
-        results,
-        normalizedStyle,
-        preset,
-        customStyle: trimmed,
-        conversationHistory,
-        spinnerLabel: 'replying…',
-        showSpacer: false
-      });
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      console.error(`\nagent failed durante el turno: ${reason}`);
-      debugLog('Chat loop agent error:', error);
-      continue;
-    }
-
-    if (!responseData || !responseData.finalResponse) {
-      console.warn('Agent no devolvió respuesta. Probá de nuevo.');
-      continue;
-    }
-
-    console.log('');
-    printFinalResponse(responseData.finalResponse);
-    if (responseData.historyAppend?.length) {
-      conversationHistory.push(...responseData.historyAppend);
-    }
-
-    if (responseData.xml) {
-      await appendSessionLog(options.sessionLog || DEFAULT_SESSION_LOG, responseData.xml);
-    }
-  }
-}
+// ============ ARGS ============
 
 function parseArgs(argv) {
   const options = {
     inputPath: null,
     url: null,
-    outputFile: process.env.GEMINI_OCR_OUTPUT_FILE || process.env.OPENAI_OCR_OUTPUT_FILE || null,
     json: false,
     recursive: true,
-    style: process.env.TWX_DEFAULT_STYLE || null,
+    style: null,
     styleFile: null,
     styleText: null,
-    showReflection: false,
-    sessionLog: process.env.TWX_SESSION_LOG || null,
-    agentPromptPath: null,
-    mode: DEFAULT_MODE,
-    debug: false,
+    mode: null,
+    verbose: false,
     list: false,
     listLimit: 10,
     showId: null,
     clipStart: null,
     clipEnd: null,
     clipRange: null,
-    showTranscript: false
-  };
-
-  const parseClipSeconds = (label, raw) => {
-    const seconds = parseTimecode(raw);
-    if (seconds == null) {
-      exitWithUsage(`Tiempo inválido para ${label}: ${raw}`);
-    }
-    return seconds;
-  };
-
-  const applyClipRangeValue = (raw) => {
-    if (!raw) {
-      exitWithUsage('Falta el rango para --clip (ej: 0:33:36-0:42:59).');
-    }
-    const [startRaw, endRaw] = raw.split(/[-–]/);
-    options.clipStart = parseClipSeconds('inicio de clip', startRaw);
-    if (endRaw !== undefined && endRaw !== '') {
-      options.clipEnd = parseClipSeconds('fin de clip', endRaw);
-    }
-  };
-
-  const maybeAttachedClip = (token) => {
-    const allKeys = [...CLIP_OPTION_KEYS, ...CLIP_START_KEYS, ...CLIP_END_KEYS];
-    for (const key of allKeys) {
-      if (token.startsWith(`${key}:`) || token.startsWith(`${key}=`)) {
-        return { key, value: token.slice(key.length + 1) };
-      }
-    }
-    return null;
+    showTranscript: false,
+    configCommand: false,
+    configReset: false,
+    configShow: false
   };
 
   const positional = [];
-  for (let i = 0; i < argv.length; i += 1) {
+
+  for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    const attached = maybeAttachedClip(arg);
-    if (attached) {
-      if (CLIP_OPTION_KEYS.has(attached.key)) {
-        applyClipRangeValue(attached.value);
-      } else if (CLIP_START_KEYS.has(attached.key)) {
-        options.clipStart = parseClipSeconds('inicio de clip', attached.value);
-      } else if (CLIP_END_KEYS.has(attached.key)) {
-        options.clipEnd = parseClipSeconds('fin de clip', attached.value);
-      }
+
+    // Config command
+    if (arg === 'config') {
+      options.configCommand = true;
+      continue;
+    }
+    if (arg === '--reset') {
+      options.configReset = true;
       continue;
     }
 
-    if (arg === '--path' || arg === '-p') {
-      options.inputPath = argv[++i];
-    } else if (arg === '--url' || arg === '-u') {
-      options.url = argv[++i];
-    } else if (arg === '--list' || arg === '-l') {
+    // List/History
+    if (arg === 'list' || arg === 'history' || arg === '--list' || arg === '-l') {
       options.list = true;
-    } else if (arg === '--limit') {
-      options.listLimit = Number(argv[++i]) || options.listLimit;
-    } else if (arg === '--show') {
+      continue;
+    }
+
+    // Show
+    if (arg === 'show' || arg === 'view' || arg === '--show') {
       options.showId = argv[++i] || null;
-    } else if (arg === '--output' || arg === '-o') {
-      options.outputFile = argv[++i];
-    } else if (arg === '--no-recursive') {
-      options.recursive = false;
-    } else if (arg === '--json') {
-      options.json = true;
-    } else if (arg === '--style') {
-      options.style = argv[++i];
-    } else if (arg === '--style-file') {
-      options.styleFile = argv[++i];
-    } else if (arg === '--style-text') {
-      options.styleText = argv[++i];
-    } else if (arg === '--show-reflection') {
-      options.showReflection = true;
-    } else if (arg === '--session-log') {
-      options.sessionLog = argv[++i];
-    } else if (arg === '--agent-prompt') {
-      options.agentPromptPath = argv[++i];
-    } else if (arg === '--mode') {
-      options.mode = (argv[++i] || '').toLowerCase();
-    } else if (arg === '--long' || arg === '--longform') {
-      options.mode = 'long';
-    } else if (arg === '--top' || arg === '--top5') {
-      options.mode = 'top';
-    } else if (arg === '--debug') {
-      options.debug = true;
-    } else if (arg === '--transcript' || arg === '--show-transcript' || arg === '--show-transcripts') {
-      options.showTranscript = true;
-    } else if (CLIP_OPTION_KEYS.has(arg)) {
-      applyClipRangeValue(argv[++i]);
-    } else if (CLIP_START_KEYS.has(arg)) {
-      options.clipStart = parseClipSeconds('inicio de clip', argv[++i]);
-    } else if (CLIP_END_KEYS.has(arg)) {
-      options.clipEnd = parseClipSeconds('fin de clip', argv[++i]);
-    } else if (arg === '--video') {
-      // compat: hint sin efecto
-    } else if (arg === '--help' || arg === '-h') {
-      exitWithUsage(null, 0);
-    } else if (arg.startsWith('-')) {
-      exitWithUsage(`Unknown option: ${arg}`);
-    } else {
-      const lower = arg.toLowerCase();
-      if (lower === 'list' || lower === 'history') {
-        options.list = true;
-      } else if (lower === 'show' || lower === 'view') {
-        options.showId = positional[1] || null;
-      } else {
-        positional.push(arg);
+      continue;
+    }
+
+    // Standard flags
+    if (arg === '--path' || arg === '-p') { options.inputPath = argv[++i]; continue; }
+    if (arg === '--url' || arg === '-u') { options.url = argv[++i]; continue; }
+    if (arg === '--limit') { options.listLimit = Number(argv[++i]) || 10; continue; }
+    if (arg === '--json') { options.json = true; continue; }
+    if (arg === '--no-recursive') { options.recursive = false; continue; }
+    if (arg === '--style') { options.style = argv[++i]; continue; }
+    if (arg === '--style-file') { options.styleFile = argv[++i]; continue; }
+    if (arg === '--style-text') { options.styleText = argv[++i]; continue; }
+    if (arg === '--mode') { options.mode = argv[++i]; continue; }
+    if (arg === '--long' || arg === '--longform') { options.mode = 'long'; continue; }
+    if (arg === '--top' || arg === '--top5') { options.mode = 'top'; continue; }
+    if (arg === '--verbose' || arg === '--debug') { options.verbose = true; continue; }
+    if (arg === '--transcript' || arg === '--show-transcript') { options.showTranscript = true; continue; }
+    if (arg === '--help' || arg === '-h') { showUsage(); process.exit(0); }
+
+    // Clip flags
+    if (arg === '--clip' || arg === '--range') {
+      const val = argv[++i];
+      if (val) {
+        const [startRaw, endRaw] = val.split(/[-–]/);
+        options.clipStart = parseTimecode(startRaw);
+        if (endRaw) options.clipEnd = parseTimecode(endRaw);
       }
+      continue;
     }
+    if (arg === '--start' || arg === '--from') { options.clipStart = parseTimecode(argv[++i]); continue; }
+    if (arg === '--end' || arg === '--to') { options.clipEnd = parseTimecode(argv[++i]); continue; }
+
+    // Unknown flag
+    if (arg.startsWith('-')) {
+      continue; // Ignore unknown
+    }
+
+    // Positional
+    positional.push(arg);
   }
 
+  // Build clip range
   if (options.clipStart != null || options.clipEnd != null) {
-    const start = options.clipStart ?? 0;
-    const end = options.clipEnd;
-    if (end != null && end <= start) {
-      exitWithUsage('El fin del clip debe ser mayor al inicio.');
-    }
-    options.clipRange = { start, end: end ?? null };
+    options.clipRange = {
+      start: options.clipStart ?? 0,
+      end: options.clipEnd ?? null
+    };
   }
 
+  // Handle positional args
   if (options.list) {
-    const numeric = positional.find((value) => /^\d+$/.test(value));
-    if (numeric) {
-      options.listLimit = Number(numeric);
-    }
+    const num = positional.find(v => /^\d+$/.test(v));
+    if (num) options.listLimit = Number(num);
     return options;
-  }
-
-  if (options.showId && options.showId.startsWith('-')) {
-    options.showId = null;
   }
 
   if (positional.length > 0) {
     const first = positional[0];
-    if (!options.inputPath && !options.url) {
-      if (/^https?:\/\//i.test(first)) {
-        options.url = first;
-      } else {
-        options.inputPath = first;
-      }
-    } else if (!options.style) {
-      options.style = first;
+
+    // Check if it's a MongoDB ObjectId (24 hex chars)
+    if (/^[a-f0-9]{24}$/i.test(first)) {
+      options.showId = first;
+      return options;
+    }
+
+    // Check if URL or path
+    if (/^https?:\/\//i.test(first)) {
+      options.url = first;
+    } else {
+      options.inputPath = first;
     }
   }
 
@@ -2244,77 +1374,40 @@ function parseArgs(argv) {
   return options;
 }
 
-function exitWithUsage(message, exitCode = 1) {
-  if (message) {
-    console.error(`\n${message}`);
-  }
-  console.error(`
-Usage: npm run ocr -- (--path <file-or-directory> | --url <tweet-or-video>) [options]
+function showUsage() {
+  console.log(`
+  twx
 
-Options:
-  list / --list             Listar ejecuciones previas (no requiere path/url)
-  --limit <n>               Límite para --list (default: 10)
-  show <id> / --show <id>   Mostrar una ejecución guardada por id
-  --path, -p <value>        Local media folder or file
-  --url, -u <value>         Remote URL (Twitter/X via gallery-dl, YouTube via yt-dlp)
-  --output, -o <file>       Save raw JSON to disk
-  --json                    Print JSON to stdout
-  --style <name>            Preset (musk, buk, raw, brief, etc.)
-  --style-file <file>       Custom preset instructions from a file
-  --style-text <value>      Inline custom instructions
-  --mode <standard|long>    Usa el prompt largo sin afectar el modo estándar
-  --long / --longform       Atajo para --mode long
-  --top / --top5            Atajo para --mode top (top 5 insights)
-  --clip <a-b>              Transcribir solo el fragmento (hh:mm:ss). Ej: 0:33:36-0:42:59
-  --start <time>            Inicio del clip (alias: --from)
-  --end <time>              Fin del clip (alias: --to)
-  --transcript              Mostrar también las transcripciones crudas guardadas
-  --show-reflection         Print the internal reflection inline
-  --session-log <file>      Where to store the XML response (default: ${DEFAULT_SESSION_LOG})
-  --agent-prompt <file>     Override the agent prompt template
-  --debug                   Verbose logging
-  --no-recursive            Do not scan subdirectories
-  --help, -h                Show this help
+  Pegá una URL. Obtené el insight.
 
-Environment:
-  GEMINI_API_KEY / GOOGLE_API_KEY Requerido para usar Gemini (solo agent)
-  GEMINI_VISION_MODEL             Vision model (default: ${DEFAULT_VISION_MODEL})
-  MISTRAL_API_KEY                 API key para OCR Mistral (obligatorio)
-  MISTRAL_ORG_ID                  Optional: header Mistral-Organization
-  MISTRAL_OCR_MODEL               Modelo OCR (default: ${MISTRAL_OCR_MODEL})
-  MONGODB_URL / MONGO_URL         URI MongoDB (default: mongodb://localhost:27017/twx_history)
-  GEMINI_AGENT_MODEL              Agent model (default: ${DEFAULT_AGENT_MODEL})
-  GEMINI_AGENT_MAX_OUTPUT_TOKENS  Max agent output tokens (default: ${DEFAULT_AGENT_MAX_OUTPUT_TOKENS})
-  GEMINI_THINKING_LEVEL           Thinking depth (default: ${DEFAULT_THINKING_LEVEL})
-  GEMINI_MEDIA_RESOLUTION         Vision fidelity (default: ${DEFAULT_MEDIA_RESOLUTION})
-  GEMINI_OCR_DOWNLOAD_ROOT        Download directory (default: ${DOWNLOAD_ROOT})
-  OPENAI_API_KEY                  Required for Whisper transcription
-  OPENAI_TRANSCRIBE_MODEL         Whisper model (default: ${DEFAULT_TRANSCRIBE_MODEL})
-  TWX_MODE                        default: ${DEFAULT_MODE} (use "long" for prompt extenso, "top" para top 5)
-  TWX_DEFAULT_STYLE               Default preset when --style is omitted
-  TWX_SESSION_LOG                 Alternate path for full reflections
-  TWX_NO_SPINNER                  Set to 1 to disable spinners
-  TWX_DEBUG                       Set to 1 for verbose logging by default
-  WHISPER_SEGMENT_SECONDS         Segment length (s) when audio >25MB (default: ${WHISPER_SEGMENT_SECONDS})
-  WHISPER_AUDIO_BITRATE           Bitrate for Whisper transcodes (default: ${WHISPER_TARGET_BITRATE})
-  WHISPER_SAMPLE_RATE             Sample rate for Whisper transcodes (default: ${WHISPER_TARGET_SAMPLE_RATE})
+  USO
+    twx <url>                   Twitter, YouTube, cualquier URL
+    twx <path>                  Archivos locales
+    twx list                    Historial
+    twx config                  Configurar API keys
+
+  ESTILOS
+    twx <url> musk              Directo, técnico (default)
+    twx <url> bukowski          Crudo, sin filtro
+    twx <url> brief             3 bullets
+    twx <url> raw               Solo transcripción
+
+  OPCIONES
+    --clip 0:30-2:00            Fragmento de video
+    --verbose                   Ver detalles técnicos
+    --top                       Modo TOP 5 insights
+
+  EJEMPLOS
+    twx https://x.com/user/status/123456
+    twx https://youtube.com/watch?v=abc --clip 1:00-5:00
+    twx ./screenshots/ bukowski
+
 `);
-  process.exit(exitCode);
 }
 
-main().catch((error) => {
-  console.error('\nUnexpected error while processing.');
-  console.error(error);
+// ============ RUN ============
+
+main().catch(error => {
+  errors.show(error, { verbose: process.argv.includes('--verbose') });
   process.exit(1);
 });
-function sanitizeTitle(title) {
-  if (!title) return '';
-  return title
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 140);
-}
