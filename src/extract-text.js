@@ -847,23 +847,55 @@ async function startConversationLoop({ client, results, options, config, convers
       spin.success('');
 
       const rawXml = extractResponseText(response)?.trim() ?? '';
+      ui.debug('Chat raw response length:', rawXml.length);
+      ui.debug('Chat raw response preview:', rawXml.slice(0, 300));
+
       const xml = extractResponseBlock(rawXml);
+      ui.debug('Chat xml block found:', !!xml, 'length:', xml?.length || 0);
+
+      let finalResponse = '';
 
       if (xml) {
-        const finalResponse = extractTag(xml, 'final_response');
-        if (finalResponse) {
-          ui.showResult(stripXmlTags(finalResponse));
+        finalResponse = extractTag(xml, 'final_response');
+        ui.debug('Chat finalResponse from tag:', finalResponse?.length || 0);
+
+        // Fallback: if no <final_response> tag, use content inside <response> directly
+        if (!finalResponse) {
+          const innerContent = xml.replace(/^<response[^>]*>/, '').replace(/<\/response>$/, '').trim();
+          if (innerContent) {
+            finalResponse = innerContent;
+            ui.debug('Chat using direct response content (no final_response tag)');
+          }
         }
+      } else if (rawXml.length > 0) {
+        // No XML block at all, use raw response
+        finalResponse = rawXml;
+        ui.debug('Chat using raw response (no xml block)');
+      }
+
+      if (finalResponse) {
+        ui.showResult(stripXmlTags(finalResponse));
 
         const assistantContent = response?.candidates?.[0]?.content;
         if (assistantContent) {
           conversationHistory.push(userContent, assistantContent);
         }
+      } else {
+        ui.debug('Chat no response to show');
       }
 
     } catch (error) {
       spin.error('Error');
-      errors.warn('Could not respond.', { verbose: options.verbose, technical: error.message });
+      ui.debug('Chat error:', error);
+
+      // Better error messages for common cases
+      if (error?.status === 500) {
+        errors.warn('Server error. Try again.', { verbose: options.verbose, technical: error.message });
+      } else if (error?.status === 429) {
+        errors.warn('Rate limit. Wait a moment.', { verbose: options.verbose, technical: error.message });
+      } else {
+        errors.warn('Could not respond.', { verbose: options.verbose, technical: error.message });
+      }
     }
   }
 }
