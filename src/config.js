@@ -17,12 +17,14 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 
 // Defaults
 const DEFAULTS = {
+  agentProvider: 'gemini',
   style: 'musk',
   mode: 'standard',
   verbose: false,
   keepDownloads: false,
   thinkingLevel: 'HIGH',
   mediaResolution: 'MEDIA_RESOLUTION_HIGH',
+  agentMaxOutputTokens: 64000,
   whisperSegmentSeconds: 480,
   whisperBitrate: '48k',
   whisperSampleRate: '16000'
@@ -68,8 +70,10 @@ function getEnvValue(key) {
   const envMappings = {
     mistralApiKey: ['MISTRAL_API_KEY'],
     geminiApiKey: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+    anthropicApiKey: ['ANTHROPIC_API_KEY', 'CLAUDE_API_KEY'],
     openaiApiKey: ['OPENAI_API_KEY'],
     mongodbUrl: ['MONGODB_URL', 'MONGO_URL', 'MONGO_URI'],
+    agentProvider: ['TWX_AGENT_PROVIDER'],
     style: ['TWX_DEFAULT_STYLE'],
     mode: ['TWX_MODE'],
     verbose: ['TWX_DEBUG'],
@@ -78,6 +82,7 @@ function getEnvValue(key) {
     mediaResolution: ['GEMINI_MEDIA_RESOLUTION'],
     visionModel: ['GEMINI_VISION_MODEL'],
     agentModel: ['GEMINI_AGENT_MODEL'],
+    agentMaxOutputTokens: ['AGENT_MAX_OUTPUT_TOKENS', 'GEMINI_MAX_OUTPUT_TOKENS', 'CLAUDE_MAX_OUTPUT_TOKENS'],
     transcribeModel: ['OPENAI_TRANSCRIBE_MODEL'],
     ocrModel: ['MISTRAL_OCR_MODEL'],
     mistralOrgId: ['MISTRAL_ORG_ID', 'MISTRAL_ORGANIZATION', 'MISTRAL_ORG']
@@ -105,17 +110,22 @@ export async function loadConfig() {
   if (cachedConfig) return cachedConfig;
 
   const fileConfig = await readConfigFile() || {};
+  const maxTokensEnv = getEnvValue('agentMaxOutputTokens');
+  const parsedMaxTokens = Number(maxTokensEnv ?? fileConfig.agentMaxOutputTokens ?? DEFAULTS.agentMaxOutputTokens);
+  const agentMaxOutputTokens = Number.isFinite(parsedMaxTokens) && parsedMaxTokens > 0 ? parsedMaxTokens : DEFAULTS.agentMaxOutputTokens;
 
   // Merge: defaults < fileConfig < env vars
   const config = {
     // API Keys
     mistralApiKey: getEnvValue('mistralApiKey') || fileConfig.mistralApiKey || null,
     geminiApiKey: getEnvValue('geminiApiKey') || fileConfig.geminiApiKey || null,
+    anthropicApiKey: getEnvValue('anthropicApiKey') || fileConfig.anthropicApiKey || null,
     openaiApiKey: getEnvValue('openaiApiKey') || fileConfig.openaiApiKey || null,
     mongodbUrl: getEnvValue('mongodbUrl') || fileConfig.mongodbUrl || 'mongodb://localhost:27017/twx_history',
     mistralOrgId: getEnvValue('mistralOrgId') || fileConfig.mistralOrgId || null,
 
     // Preferences
+    agentProvider: (getEnvValue('agentProvider') || fileConfig.agentProvider || DEFAULTS.agentProvider || 'gemini').toString().toLowerCase(),
     style: getEnvValue('style') || fileConfig.style || DEFAULTS.style,
     mode: getEnvValue('mode') || fileConfig.mode || DEFAULTS.mode,
     verbose: getEnvValue('verbose') || fileConfig.verbose || DEFAULTS.verbose,
@@ -126,6 +136,7 @@ export async function loadConfig() {
     mediaResolution: getEnvValue('mediaResolution') || fileConfig.mediaResolution || DEFAULTS.mediaResolution,
     visionModel: getEnvValue('visionModel') || fileConfig.visionModel || 'gemini-3-pro-preview',
     agentModel: getEnvValue('agentModel') || fileConfig.agentModel || 'gemini-3-pro-preview',
+    agentMaxOutputTokens,
     transcribeModel: getEnvValue('transcribeModel') || fileConfig.transcribeModel || 'whisper-1',
     ocrModel: getEnvValue('ocrModel') || fileConfig.ocrModel || 'mistral-ocr-latest',
 
@@ -176,8 +187,15 @@ export async function getMissingKeys() {
   if (!config.mistralApiKey) {
     missing.push({ key: 'mistralApiKey', name: 'Mistral', required: true, purpose: 'leer texto de imágenes' });
   }
-  if (!config.geminiApiKey) {
-    missing.push({ key: 'geminiApiKey', name: 'Gemini/Google', required: false, purpose: 'análisis con IA' });
+  if (config.agentProvider === 'gemini' && !config.geminiApiKey) {
+    missing.push({ key: 'geminiApiKey', name: 'Gemini/Google', required: true, purpose: 'análisis con IA (proveedor Gemini)' });
+  } else if (!config.geminiApiKey) {
+    missing.push({ key: 'geminiApiKey', name: 'Gemini/Google', required: false, purpose: 'análisis con IA (opcional si usás Gemini)' });
+  }
+  if (config.agentProvider === 'claude' && !config.anthropicApiKey) {
+    missing.push({ key: 'anthropicApiKey', name: 'Anthropic/Claude', required: true, purpose: 'análisis con IA (proveedor Claude)' });
+  } else if (!config.anthropicApiKey) {
+    missing.push({ key: 'anthropicApiKey', name: 'Anthropic/Claude', required: false, purpose: 'Claude como alternativo' });
   }
   if (!config.openaiApiKey) {
     missing.push({ key: 'openaiApiKey', name: 'OpenAI', required: false, purpose: 'transcribir audio/video' });
@@ -240,6 +258,21 @@ export async function runSetup(options = {}) {
   }
   if (geminiKey && geminiKey.trim()) {
     updates.geminiApiKey = geminiKey.trim();
+  }
+
+  // Anthropic/Claude (optional but recommended for Claude mode)
+  const anthropicKey = await clack.text({
+    message: 'Anthropic/Claude API key (for Claude mode)',
+    placeholder: 'sk-ant-... (Enter to skip)',
+    defaultValue: ''
+  });
+
+  if (clack.isCancel(anthropicKey)) {
+    clack.cancel('Setup cancelled.');
+    process.exit(0);
+  }
+  if (anthropicKey && anthropicKey.trim()) {
+    updates.anthropicApiKey = anthropicKey.trim();
   }
 
   // OpenAI (optional)
@@ -326,9 +359,12 @@ export async function showConfig() {
   console.log('  API Keys:');
   console.log(`    Mistral:  ${maskKey(config.mistralApiKey)}`);
   console.log(`    Gemini:   ${maskKey(config.geminiApiKey)}`);
+  console.log(`    Anthropic: ${maskKey(config.anthropicApiKey)}`);
   console.log(`    OpenAI:   ${maskKey(config.openaiApiKey)}`);
   console.log('');
   console.log('  Preferences:');
+  console.log(`    Agent:    ${config.agentProvider} (${config.agentModel || 'auto'})`);
+  console.log(`    Max out:  ${config.agentMaxOutputTokens} tokens`);
   console.log(`    Style:    ${config.style}`);
   console.log(`    Mode:     ${config.mode}`);
   console.log(`    Verbose:  ${config.verbose ? 'yes' : 'no'}`);

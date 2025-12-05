@@ -14,11 +14,12 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI } from '@google/genai';
+import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { PDFDocument } from 'pdf-lib';
 
 // Internal modules
-import { loadConfig, isConfigured, runSetup, showConfig, resetConfig } from './config.js';
+import { loadConfig, isConfigured, runSetup, showConfig, resetConfig, saveConfig } from './config.js';
 import * as ui from './ui.js';
 import * as errors from './errors.js';
 import { saveRun, listRuns, buildAutoTitle, getRunById } from './db.js';
@@ -106,6 +107,12 @@ async function main() {
     return;
   }
 
+  // Comando: cambio de modelo/proveedor
+  if (options.modelCommand) {
+    await handleModelCommand(options.modelValue);
+    return;
+  }
+
   // Comando: show
   if (options.showId) {
     await handleShowCommand(options.showId, options);
@@ -126,8 +133,10 @@ async function main() {
 
   // Load config
   const config = await loadConfig();
+  const providerRaw = (config.agentProvider || 'gemini').toLowerCase();
+  const agentProvider = providerRaw === 'claude' ? 'claude' : 'gemini';
 
-  ui.debug('Config loaded:', { ...config, mistralApiKey: '***', geminiApiKey: '***', openaiApiKey: '***' });
+  ui.debug('Config loaded:', { ...config, mistralApiKey: '***', geminiApiKey: '***', anthropicApiKey: '***', openaiApiKey: '***' });
   ui.debug('Options:', options);
 
   // Validate required API keys
@@ -138,7 +147,10 @@ async function main() {
 
   // Inicializar clientes
   const geminiClient = config.geminiApiKey ? new GoogleGenAI({ apiKey: config.geminiApiKey }) : null;
+  const anthropicClient = config.anthropicApiKey ? new Anthropic({ apiKey: config.anthropicApiKey }) : null;
   const openaiClient = config.openaiApiKey ? new OpenAI({ apiKey: config.openaiApiKey }) : null;
+
+  const agentAvailable = agentProvider === 'claude' ? Boolean(anthropicClient) : Boolean(geminiClient);
 
   // Procesar medios
   const spin = ui.spinner('Analyzing...');
@@ -217,7 +229,7 @@ async function main() {
         ui.showRawResult(combined, { label: 'Transcription' });
       }
 
-      await persistRun({ options, config, results, agentData: null, rawMode: true });
+      await persistRun({ options, config, results, agentData: null, rawMode: true, agentProvider });
       return;
     }
 
@@ -225,9 +237,11 @@ async function main() {
     let agentData = null;
     let conversationHistory = [];
 
-    if (geminiClient && results.some(r => r.text)) {
+    if (results.some(r => r.text) && agentAvailable) {
       const agentResult = await runInsightAgent({
-        client: geminiClient,
+        provider: agentProvider,
+        geminiClient,
+        anthropicClient,
         results,
         style: options.style || config.style,
         styleFile: options.styleFile,
@@ -247,13 +261,13 @@ async function main() {
           });
         }
       }
-    } else if (!geminiClient) {
-      errors.warn('No Gemini key, cannot run AI analysis.', {
+    } else if (results.some(r => r.text) && !agentAvailable) {
+      const providerName = agentProvider === 'claude' ? 'Anthropic/Claude' : 'Gemini';
+      errors.warn(`No ${providerName} key, cannot run AI analysis.`, {
         verbose: options.verbose,
-        technical: 'Run "twx config" to add GEMINI_API_KEY'
+        technical: `Add the missing API key or switch provider with "twx setmodel <gemini|opus>"`
       });
 
-      // Mostrar raw como fallback
       const combined = results.filter(r => r.text).map(r => r.text).join('\n\n');
       if (combined) {
         ui.showRawResult(combined);
@@ -261,10 +275,10 @@ async function main() {
     }
 
     // Save to history
-    await persistRun({ options, config, results, agentData, rawMode: false });
+    await persistRun({ options, config, results, agentData, rawMode: false, agentProvider });
 
     // Interactive chat mode
-    if (geminiClient && ui.isInteractive() && agentData?.finalResponse) {
+    if (agentProvider === 'gemini' && geminiClient && ui.isInteractive() && agentData?.finalResponse) {
       await startConversationLoop({
         client: geminiClient,
         results,
@@ -679,13 +693,20 @@ async function readPlainText(filePath, inlineText = null) {
 
 // ============ AGENT ============
 
-async function runInsightAgent({ client, results, style, styleFile, styleText, mode, config }) {
+async function runInsightAgent({ provider, geminiClient, anthropicClient, results, style, styleFile, styleText, mode, config }) {
   const promptPath = resolveAgentPromptPath(mode);
   const promptSource = await fs.readFile(promptPath, 'utf8');
 
+  const providerKey = provider === 'claude' ? 'claude' : 'gemini';
   const normalizedStyle = normalizeStyle(style);
   const preset = normalizedStyle && STYLE_PRESETS[normalizedStyle];
   const customStyle = styleText || (styleFile ? await fs.readFile(path.resolve(styleFile), 'utf8') : '');
+  const defaultGeminiModel = 'gemini-3-pro-preview';
+  const defaultClaudeModel = 'claude-opus-4.5';
+  const configModel = (config.agentModel || '').toString();
+  const model = providerKey === 'claude'
+    ? (configModel.toLowerCase().includes('claude') ? configModel : defaultClaudeModel)
+    : (configModel.toLowerCase().includes('gemini') ? configModel : defaultGeminiModel);
 
   const spin = ui.spinner('Thinking...');
 
@@ -701,24 +722,45 @@ async function runInsightAgent({ client, results, style, styleFile, styleText, m
       { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' }
     ];
 
-    const userContent = { role: 'user', parts: [{ text: payload }] };
+    const userContent = providerKey === 'claude'
+      ? { role: 'user', content: payload }
+      : { role: 'user', parts: [{ text: payload }] };
 
-    const response = await client.models.generateContent({
-      model: config.agentModel || 'gemini-3-pro-preview',
-      contents: [userContent],
-      systemInstruction: { parts: [{ text: promptSource }] },
-      safetySettings,
-      config: {
-        maxOutputTokens: 64000,
-        temperature: 1,
-        thinkingLevel: config.thinkingLevel || 'HIGH',
-        mediaResolution: config.mediaResolution || 'MEDIA_RESOLUTION_HIGH'
+    let response = null;
+    let assistantContent = null;
+
+    if (providerKey === 'claude') {
+      if (!anthropicClient) {
+        throw new errors.HumanError('Claude mode enabled but Anthropic client not initialized.');
       }
-    });
+
+      response = await anthropicClient.messages.create({
+        model,
+        system: promptSource,
+        messages: [{ role: 'user', content: payload }],
+        max_tokens: config.agentMaxOutputTokens || 64000,
+        temperature: 1
+      });
+      assistantContent = response;
+    } else {
+      response = await geminiClient.models.generateContent({
+        model,
+        contents: [userContent],
+        systemInstruction: { parts: [{ text: promptSource }] },
+        safetySettings,
+        config: {
+          maxOutputTokens: config.agentMaxOutputTokens || 64000,
+          temperature: 1,
+          thinkingLevel: config.thinkingLevel || 'HIGH',
+          mediaResolution: config.mediaResolution || 'MEDIA_RESOLUTION_HIGH'
+        }
+      });
+      assistantContent = response?.candidates?.[0]?.content || null;
+    }
 
     spin.success('');
 
-    const rawXml = extractResponseText(response)?.trim() ?? '';
+    const rawXml = extractResponseText(response, providerKey)?.trim() ?? '';
     ui.debug('Raw response length:', rawXml.length);
     ui.debug('Raw response preview:', rawXml.slice(0, 300));
 
@@ -730,7 +772,9 @@ async function runInsightAgent({ client, results, style, styleFile, styleText, m
       if (rawXml.length > 0) {
         return {
           agentData: { reflection: '', plan: '', finalResponse: rawXml, title: '', xml: '', promptPath },
-          history: [userContent, response?.candidates?.[0]?.content].filter(Boolean)
+          history: providerKey === 'claude'
+            ? [userContent, { role: 'assistant', content: rawXml }].filter(Boolean)
+            : [userContent, response?.candidates?.[0]?.content].filter(Boolean)
         };
       }
       return null;
@@ -751,11 +795,11 @@ async function runInsightAgent({ client, results, style, styleFile, styleText, m
       }
     }
 
-    const assistantContent = response?.candidates?.[0]?.content || null;
-
     return {
       agentData: { reflection, plan, finalResponse, title, xml, promptPath },
-      history: [userContent, assistantContent].filter(Boolean)
+      history: providerKey === 'claude'
+        ? [userContent, { role: 'assistant', content: rawXml }].filter(Boolean)
+        : [userContent, assistantContent].filter(Boolean)
     };
 
   } catch (error) {
@@ -808,6 +852,9 @@ async function startConversationLoop({ client, results, options, config, convers
   const promptSource = await fs.readFile(promptPath, 'utf8');
   const normalizedStyle = normalizeStyle(options.style || config.style);
   const preset = normalizedStyle && STYLE_PRESETS[normalizedStyle];
+  const chatModel = (config.agentModel && config.agentModel.toLowerCase().includes('gemini'))
+    ? config.agentModel
+    : 'gemini-3-pro-preview';
 
   console.log('');
   ui.clack.log.info('Chat mode. Type your question or "exit" to quit.');
@@ -833,11 +880,11 @@ async function startConversationLoop({ client, results, options, config, convers
       const userContent = { role: 'user', parts: [{ text: payload }] };
 
       const response = await client.models.generateContent({
-        model: config.agentModel || 'gemini-3-pro-preview',
+        model: chatModel,
         contents: [...conversationHistory, userContent],
         systemInstruction: { parts: [{ text: promptSource }] },
         config: {
-          maxOutputTokens: 64000,
+          maxOutputTokens: config.agentMaxOutputTokens || 64000,
           temperature: 1,
           thinkingLevel: config.thinkingLevel || 'HIGH',
           mediaResolution: config.mediaResolution || 'MEDIA_RESOLUTION_HIGH'
@@ -919,6 +966,40 @@ async function handleListCommand(options) {
   }
 }
 
+async function handleModelCommand(value) {
+  const raw = (value || '').trim();
+
+  if (!raw) {
+    console.log('\nUsage: twx setmodel <gemini|opus|claude|model-id>\n');
+    return;
+  }
+
+  const normalized = raw.toLowerCase();
+  const presets = {
+    gemini: { provider: 'gemini', model: 'gemini-3-pro-preview' },
+    g3: { provider: 'gemini', model: 'gemini-3-pro-preview' },
+    g3pro: { provider: 'gemini', model: 'gemini-3-pro-preview' },
+    g3max: { provider: 'gemini', model: 'gemini-3-pro-preview' },
+    opus: { provider: 'claude', model: 'claude-opus-4.5' },
+    claude: { provider: 'claude', model: 'claude-opus-4.5' },
+    'claude-opus': { provider: 'claude', model: 'claude-opus-4.5' },
+    'claude-opus-4.5': { provider: 'claude', model: 'claude-opus-4.5' }
+  };
+
+  const preset = presets[normalized] || null;
+  const provider = preset?.provider || (normalized.includes('claude') || normalized.includes('opus') ? 'claude' : 'gemini');
+  const model = preset?.model || raw;
+
+  const saved = await saveConfig({ agentProvider: provider, agentModel: model });
+
+  if (saved) {
+    console.log(`\nAI provider set to ${provider} (model: ${model}).\n`);
+    console.log('Defaults: max output tokens 64000, temperature 1, thinking level HIGH.');
+  } else {
+    console.log('\nCould not save the requested model change.\n');
+  }
+}
+
 async function handleShowCommand(id, options = {}) {
   try {
     const run = await getRunById(id);
@@ -932,7 +1013,8 @@ async function handleShowCommand(id, options = {}) {
 
     // Chat mode si está disponible
     const config = await loadConfig();
-    const canChat = ui.isInteractive() && config.geminiApiKey && (run.finalResponse || run.results?.some(r => r.text));
+    const provider = (run.agentProvider || config.agentProvider || 'gemini').toLowerCase();
+    const canChat = ui.isInteractive() && provider === 'gemini' && config.geminiApiKey && (run.finalResponse || run.results?.some(r => r.text));
 
     if (canChat) {
       const geminiClient = new GoogleGenAI({ apiKey: config.geminiApiKey });
@@ -956,13 +1038,14 @@ async function handleShowCommand(id, options = {}) {
 
 // ============ PERSISTENCE ============
 
-async function persistRun({ options, config, results, agentData, rawMode }) {
+async function persistRun({ options, config, results, agentData, rawMode, agentProvider }) {
   try {
     const doc = {
       source: { url: options.url || null, path: options.inputPath || null },
       mode: options.mode || config.mode,
       style: options.style || config.style,
       ocrModel: config.ocrModel,
+      agentProvider: agentProvider || config.agentProvider,
       agentModel: config.agentModel,
       whisperModel: config.transcribeModel,
       mediaResolution: config.mediaResolution,
@@ -1259,8 +1342,20 @@ function resolveAgentPromptPath(mode) {
   return AGENT_PROMPT_PATH;
 }
 
-function extractResponseText(response) {
+function extractResponseText(response, provider = 'gemini') {
   if (!response) return '';
+  if (provider === 'claude') {
+    const parts = response.content || [];
+    return parts
+      .map((p) => {
+        if (typeof p === 'string') return p;
+        if (p?.text) return p.text;
+        if (p?.type === 'text') return p.text;
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
   if (typeof response.text === 'function') return response.text();
   if (typeof response.text === 'string') return response.text;
   const parts = response.candidates?.[0]?.content?.parts || [];
@@ -1322,6 +1417,8 @@ function parseArgs(argv) {
     verbose: false,
     list: false,
     listLimit: 10,
+    modelCommand: false,
+    modelValue: null,
     showId: null,
     clipStart: null,
     clipEnd: null,
@@ -1350,6 +1447,13 @@ function parseArgs(argv) {
     // List/History
     if (arg === 'list' || arg === 'history' || arg === '--list' || arg === '-l') {
       options.list = true;
+      continue;
+    }
+
+    // Model command
+    if (arg === 'model' || arg === 'setmodel' || arg === 'provider') {
+      options.modelCommand = true;
+      options.modelValue = argv[++i] || null;
       continue;
     }
 
@@ -1447,6 +1551,7 @@ function showUsage() {
     twx <path>                  Local files
     twx list                    History
     twx config                  Setup API keys
+    twx setmodel opus           Switch AI provider (gemini|opus|claude)
 
   STYLES
     twx <url> musk              Direct, technical (default)

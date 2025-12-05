@@ -26,6 +26,7 @@ const runSchema = new mongoose.Schema(
     mode: String,
     style: String,
     ocrModel: String,
+    agentProvider: String,
     agentModel: String,
     whisperModel: String,
     mediaResolution: String,
