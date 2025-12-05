@@ -38,7 +38,7 @@ const DEFAULT_MEDIA_RESOLUTION =
 const DOWNLOAD_ROOT =
   process.env.GEMINI_OCR_DOWNLOAD_ROOT ||
   process.env.OPENAI_OCR_DOWNLOAD_ROOT ||
-  path.join(process.cwd(), 'gallery-dl-runs');
+  path.join(os.tmpdir(), 'twx-gallery-dl');
 const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY || null;
 const MISTRAL_ORG_ID =
   process.env.MISTRAL_ORG_ID || process.env.MISTRAL_ORGANIZATION || process.env.MISTRAL_ORG || null;
@@ -56,6 +56,7 @@ const WHISPER_TARGET_SAMPLE_RATE = process.env.WHISPER_SAMPLE_RATE || '16000';
 const SPINNER_ENABLED = process.stdout.isTTY && process.env.TWX_NO_SPINNER !== '1';
 let DEBUG_ENABLED = process.env.TWX_DEBUG === '1';
 const DEFAULT_MODE = (process.env.TWX_MODE || 'standard').toLowerCase();
+const KEEP_DOWNLOADS = process.env.TWX_KEEP_DOWNLOADS === '1';
 const CLIP_OPTION_KEYS = new Set(['--clip', '--range', '--segment']);
 const CLIP_START_KEYS = new Set([
   '--start',
@@ -188,6 +189,10 @@ function startSpinner(text) {
   return ora({ text, color: 'cyan' }).start();
 }
 
+function delayMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.debug) {
@@ -227,6 +232,7 @@ async function main() {
   const geminiClient = geminiKey ? new GoogleGenAI({ apiKey: geminiKey }) : null;
   const openaiClient = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
   const mediaItems = [];
+  const cleanupTasks = [];
 
   if (options.inputPath) {
     const stats = await safeStat(options.inputPath);
@@ -254,6 +260,9 @@ async function main() {
       exitWithUsage(`No se descargaron medios compatibles desde: ${options.url}`);
     }
     mediaItems.push(...download.items);
+    if (download.baseDir && !KEEP_DOWNLOADS) {
+      cleanupTasks.push(() => fs.rm(download.baseDir, { recursive: true, force: true }).catch(() => {}));
+    }
     debugLog('Media downloaded from URL:', options.url, download.items.map((item) => item.path));
   }
 
@@ -300,6 +309,16 @@ async function main() {
       if (!options.json) {
         console.error(`\nerror · ${relativePath}`);
         console.error(`        ${message}`);
+      }
+    }
+  }
+
+  if (cleanupTasks.length) {
+    for (const task of cleanupTasks) {
+      try {
+        await task();
+      } catch (error) {
+        debugLog('Cleanup error:', error);
       }
     }
   }
@@ -1061,6 +1080,7 @@ async function generateAgentResponse({
 }) {
   let response = null;
   let omitContext = false;
+  let workingHistory = Array.isArray(conversationHistory) ? [...conversationHistory] : [];
   const safetySettings = [
     { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
     { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
@@ -1069,14 +1089,15 @@ async function generateAgentResponse({
     { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' }
   ];
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const maxAttempts = 4;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const payload = buildAgentPayload({
       results,
       styleKey: normalizedStyle,
       preset,
       customStyle,
       omitContext,
-      conversationHistory
+      conversationHistory: workingHistory
     });
     debugLog('Payload sent to agent:\n' + payload);
 
@@ -1114,6 +1135,27 @@ async function generateAgentResponse({
       if (isInvalidPromptError(error) && !omitContext) {
         console.warn('Prompt was flagged; retrying with captions trimmed.');
         omitContext = true;
+        continue;
+      }
+      if (isQuotaExceeded(error)) {
+        const retryDelaySeconds = extractRetryDelaySeconds(error);
+        const removeCount = Math.min(3, workingHistory.length);
+        if (!removeCount) {
+          debugLog('Quota exceeded but no history to trim.');
+          throw error;
+        }
+        console.warn(
+          `Quota de tokens alcanzada; recortando las primeras ${removeCount} intervenciones y reintentando${
+            retryDelaySeconds ? ` en ~${retryDelaySeconds}s` : ''
+          }…`
+        );
+        workingHistory = workingHistory.slice(removeCount);
+        if (Array.isArray(conversationHistory) && conversationHistory.length) {
+          conversationHistory.splice(0, removeCount);
+        }
+        if (retryDelaySeconds) {
+          await delayMs(retryDelaySeconds * 1000);
+        }
         continue;
       }
       debugLog('Agent error:', error);
@@ -1256,6 +1298,40 @@ function safeStringify(value) {
   } catch (error) {
     return `[No se pudo serializar: ${error instanceof Error ? error.message : error}]`;
   }
+}
+
+function isQuotaExceeded(error) {
+  const message = error?.message || error?.toString?.() || '';
+  if (error?.status === 429 || message.includes('Quota') || message.includes('quota')) {
+    if (message.includes('RESOURCE_EXHAUSTED') || message.includes('Exceeded') || message.includes('limit')) {
+      return true;
+    }
+  }
+  const details = error?.details;
+  if (Array.isArray(details)) {
+    return details.some(
+      (detail) =>
+        detail?.['@type'] === 'type.googleapis.com/google.rpc.QuotaFailure' ||
+        detail?.['@type'] === 'type.googleapis.com/google.rpc.RetryInfo'
+    );
+  }
+  return false;
+}
+
+function extractRetryDelaySeconds(error) {
+  const details = error?.details;
+  if (Array.isArray(details)) {
+    for (const detail of details) {
+      if (detail?.['@type'] === 'type.googleapis.com/google.rpc.RetryInfo' && detail.retryDelay) {
+        const match = /(\d+(?:\.\d+)?)s/.exec(String(detail.retryDelay));
+        if (match) {
+          const secs = Number(match[1]);
+          if (Number.isFinite(secs)) return secs;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 function isInvalidPromptError(error) {
