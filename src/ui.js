@@ -184,10 +184,10 @@ export async function showHistoryList(runs, options = {}) {
  * Prompt de chat elegante
  */
 export async function chatPrompt(options = {}) {
-  const { placeholder = 'Escribí tu pregunta...' } = options;
+  const { placeholder = 'Type your question...' } = options;
 
   const input = await clack.text({
-    message: 'preguntá',
+    message: 'ask',
     placeholder,
     defaultValue: ''
   });
@@ -274,7 +274,7 @@ export function showWelcome() {
 /**
  * Mensaje de fin de sesión
  */
-export function showGoodbye(message = 'Hasta luego') {
+export function showGoodbye(message = 'Goodbye') {
   clack.outro(message);
 }
 

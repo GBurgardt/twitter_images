@@ -17,7 +17,7 @@ import { GoogleGenAI } from '@google/genai';
 import OpenAI from 'openai';
 import { PDFDocument } from 'pdf-lib';
 
-// Módulos propios
+// Internal modules
 import { loadConfig, isConfigured, runSetup, showConfig, resetConfig } from './config.js';
 import * as ui from './ui.js';
 import * as errors from './errors.js';
@@ -30,8 +30,18 @@ const LONG_AGENT_PROMPT_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt_lon
 const TOP_AGENT_PROMPT_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt_top.txt');
 const DEFAULT_SESSION_LOG = path.join(PROJECT_ROOT, 'current_session.txt');
 
-// Cargar .env como fallback
+// Load .env as fallback
 dotenv.config({ path: path.join(PROJECT_ROOT, '.env'), override: false });
+
+// Silence Google SDK message about duplicate API keys
+const originalConsoleWarn = console.warn;
+console.warn = (...args) => {
+  const msg = args[0]?.toString?.() || '';
+  if (msg.includes('GOOGLE_API_KEY') || msg.includes('GEMINI_API_KEY')) {
+    return; // Silenciar
+  }
+  originalConsoleWarn.apply(console, args);
+};
 
 // Constantes
 const MAX_INLINE_FILE_BYTES = 20 * 1024 * 1024;
@@ -79,7 +89,7 @@ async function main() {
   if (options.configCommand) {
     if (options.configReset) {
       await resetConfig();
-      ui.clack.log.success('Configuración reseteada.');
+      ui.clack.log.success('Configuration reset.');
       return;
     }
     if (options.configShow) {
@@ -102,7 +112,7 @@ async function main() {
     return;
   }
 
-  // Verificar configuración
+  // Check configuration
   if (!await isConfigured()) {
     await runSetup();
     return;
@@ -114,15 +124,15 @@ async function main() {
     return;
   }
 
-  // Cargar config
+  // Load config
   const config = await loadConfig();
 
   ui.debug('Config loaded:', { ...config, mistralApiKey: '***', geminiApiKey: '***', openaiApiKey: '***' });
   ui.debug('Options:', options);
 
-  // Validar API keys necesarias
+  // Validate required API keys
   if (!config.mistralApiKey) {
-    errors.show(new Error('Falta MISTRAL_API_KEY'));
+    errors.show(new Error('Missing MISTRAL_API_KEY'));
     return;
   }
 
@@ -131,15 +141,15 @@ async function main() {
   const openaiClient = config.openaiApiKey ? new OpenAI({ apiKey: config.openaiApiKey }) : null;
 
   // Procesar medios
-  const spin = ui.spinner('Analizando...');
+  const spin = ui.spinner('Analyzing...');
 
   try {
     const { items: mediaItems, cleanup } = await collectMediaItems(options, config);
 
     if (!mediaItems.length) {
-      spin.error('Sin contenido');
-      errors.show(new errors.HumanError('No encontré contenido para procesar.', {
-        tip: 'Verificá que la URL sea válida o que la carpeta contenga archivos de imagen/audio/video.'
+      spin.error('No content');
+      errors.show(new errors.HumanError('No content found to process.', {
+        tip: 'Check that the URL is valid or the folder contains image/audio/video files.'
       }));
       return;
     }
@@ -155,7 +165,7 @@ async function main() {
       const absolutePath = path.resolve(item.path);
       const relativePath = path.relative(process.cwd(), absolutePath) || absolutePath;
 
-      spin.update(`Procesando ${i + 1}/${mediaItems.length}...`);
+      spin.update(`Processing ${i + 1}/${mediaItems.length}...`);
       ui.debug('Processing:', relativePath, 'type:', item.type);
 
       try {
@@ -165,8 +175,8 @@ async function main() {
           text = await extractTextFromImage({ filePath: absolutePath, config });
         } else if (item.type === 'video' || item.type === 'audio') {
           if (!openaiClient) {
-            throw new errors.HumanError('Necesito OpenAI API key para transcribir audio/video.', {
-              tip: 'Ejecutá "twx config" para agregar tu clave de OpenAI.'
+            throw new errors.HumanError('OpenAI API key required for audio/video transcription.', {
+              tip: 'Run "twx config" to add your OpenAI key.'
             });
           }
           text = await transcribeMedia({ openaiClient, filePath: absolutePath, clipRange: options.clipRange, config });
@@ -191,9 +201,9 @@ async function main() {
       try { await cleanup(); } catch (e) { ui.debug('Cleanup error:', e); }
     }
 
-    spin.success('Listo');
+    spin.success('Done');
 
-    // Modo raw: solo mostrar transcripciones
+    // Raw mode: show transcriptions only
     const normalizedStyle = normalizeStyle(options.style || config.style);
     const rawMode = normalizedStyle === 'raw' && !options.styleFile && !options.styleText;
 
@@ -204,7 +214,7 @@ async function main() {
         .join('\n\n');
 
       if (combined) {
-        ui.showRawResult(combined, { label: 'Transcripción' });
+        ui.showRawResult(combined, { label: 'Transcription' });
       }
 
       await persistRun({ options, config, results, agentData: null, rawMode: true });
@@ -238,9 +248,9 @@ async function main() {
         }
       }
     } else if (!geminiClient) {
-      errors.warn('Sin clave Gemini, no puedo analizar con IA.', {
+      errors.warn('No Gemini key, cannot run AI analysis.', {
         verbose: options.verbose,
-        technical: 'Ejecutá "twx config" para agregar GEMINI_API_KEY'
+        technical: 'Run "twx config" to add GEMINI_API_KEY'
       });
 
       // Mostrar raw como fallback
@@ -250,10 +260,10 @@ async function main() {
       }
     }
 
-    // Guardar en historial
+    // Save to history
     await persistRun({ options, config, results, agentData, rawMode: false });
 
-    // Modo chat interactivo
+    // Interactive chat mode
     if (geminiClient && ui.isInteractive() && agentData?.finalResponse) {
       await startConversationLoop({
         client: geminiClient,
@@ -280,8 +290,8 @@ async function collectMediaItems(options, config) {
   if (options.inputPath) {
     const stats = await safeStat(options.inputPath);
     if (!stats) {
-      throw new errors.HumanError(`No encontré: ${options.inputPath}`, {
-        tip: 'Verificá que la ruta sea correcta.'
+      throw new errors.HumanError(`Not found: ${options.inputPath}`, {
+        tip: 'Check that the path is correct.'
       });
     }
 
@@ -291,8 +301,8 @@ async function collectMediaItems(options, config) {
     } else {
       const type = getMediaType(options.inputPath);
       if (!type) {
-        throw new errors.HumanError(`Tipo de archivo no soportado: ${options.inputPath}`, {
-          tip: 'Formatos soportados: imágenes (jpg, png, gif, webp), audio (mp3, m4a, wav), video (mp4, mkv, mov)'
+        throw new errors.HumanError(`Unsupported file type: ${options.inputPath}`, {
+          tip: 'Supported: images (jpg, png, gif, webp), audio (mp3, m4a, wav), video (mp4, mkv, mov)'
         });
       }
       items.push({ path: options.inputPath, type });
@@ -346,8 +356,8 @@ async function downloadRemoteMedia(url, config) {
   try {
     hostname = new URL(url).hostname.toLowerCase();
   } catch {
-    throw new errors.HumanError(`URL inválida: ${url}`, {
-      tip: 'Asegurate de copiar la URL completa.'
+    throw new errors.HumanError(`Invalid URL: ${url}`, {
+      tip: 'Make sure to copy the full URL.'
     });
   }
 
@@ -369,8 +379,8 @@ async function downloadWithGalleryDl(url, downloadRoot) {
   try {
     await runExternalCommand('gallery-dl', ['--quiet', '--write-info-json', '--write-metadata', '-d', runDir, url]);
   } catch (error) {
-    throw new errors.HumanError('No pude descargar ese contenido.', {
-      tip: 'Verificá que la URL sea pública y gallery-dl esté instalado.',
+    throw new errors.HumanError('Could not download that content.', {
+      tip: 'Check that the URL is public and gallery-dl is installed.',
       technical: error.message
     });
   }
@@ -406,8 +416,8 @@ async function downloadWithYtDlp(url, downloadRoot) {
       '-f', 'bestaudio/best', '--no-progress', '--write-info-json', url
     ]);
   } catch (error) {
-    throw new errors.HumanError('No pude descargar ese video.', {
-      tip: 'Verificá que la URL sea válida y yt-dlp esté instalado.',
+    throw new errors.HumanError('Could not download that video.', {
+      tip: 'Check that the URL is valid and yt-dlp is installed.',
       technical: error.message
     });
   }
@@ -420,7 +430,7 @@ async function downloadWithYtDlp(url, downloadRoot) {
 
 async function extractTextFromImage({ filePath, config }) {
   if (!config.mistralApiKey) {
-    throw new errors.HumanError('Falta la clave de Mistral para OCR.');
+    throw new errors.HumanError('Mistral API key required for OCR.');
   }
 
   const ext = path.extname(filePath).toLowerCase();
@@ -428,8 +438,8 @@ async function extractTextFromImage({ filePath, config }) {
   const buffer = await fs.readFile(filePath);
 
   if (buffer.length > MAX_INLINE_FILE_BYTES) {
-    throw new errors.HumanError('Imagen demasiado grande.', {
-      tip: `El límite es 20MB. Esta imagen tiene ${Math.round(buffer.length / (1024 * 1024))}MB.`
+    throw new errors.HumanError('Image too large.', {
+      tip: `Limit is 20MB. This image is ${Math.round(buffer.length / (1024 * 1024))}MB.`
     });
   }
 
@@ -459,7 +469,7 @@ async function extractTextFromImage({ filePath, config }) {
   const raw = await response.text();
 
   if (!response.ok) {
-    throw new errors.HumanError('Falló el OCR de Mistral.', {
+    throw new errors.HumanError('Mistral OCR failed.', {
       technical: `${response.status} ${response.statusText}: ${raw.slice(0, 200)}`
     });
   }
@@ -468,8 +478,8 @@ async function extractTextFromImage({ filePath, config }) {
   const text = extractMistralOcrText(data);
 
   if (!text) {
-    throw new errors.HumanError('No pude leer texto de la imagen.', {
-      tip: 'La imagen puede estar muy borrosa o no contener texto.'
+    throw new errors.HumanError('Could not read text from image.', {
+      tip: 'Image may be too blurry or contain no text.'
     });
   }
 
@@ -548,8 +558,8 @@ async function transcribeMedia({ openaiClient, filePath, clipRange = null, confi
   }
 
   if (!parts.length) {
-    throw new errors.HumanError('No pude transcribir el audio.', {
-      tip: 'El archivo puede estar vacío o en un formato no soportado.'
+    throw new errors.HumanError('Could not transcribe audio.', {
+      tip: 'File may be empty or in an unsupported format.'
     });
   }
 
@@ -579,8 +589,8 @@ async function transcodeForWhisper(filePath, { whisperBitrate, whisperSampleRate
     ]);
   } catch (error) {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    throw new errors.HumanError('Necesito ffmpeg para comprimir audio.', {
-      tip: 'Instalalo con: brew install ffmpeg',
+    throw new errors.HumanError('ffmpeg required to compress audio.', {
+      tip: 'Install with: brew install ffmpeg',
       technical: error.message
     });
   }
@@ -617,7 +627,7 @@ async function clipMediaSegment(filePath, clipRange, { whisperBitrate, whisperSa
     await runExternalCommand('ffmpeg', args);
   } catch (error) {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    throw new errors.HumanError('Error recortando audio.', { technical: error.message });
+    throw new errors.HumanError('Error clipping audio.', { technical: error.message });
   }
 
   return {
@@ -652,7 +662,7 @@ async function splitAudioIfNeeded(filePath, { whisperSegmentSeconds, whisperBitr
 
   if (!paths.length) {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    throw new errors.HumanError('Error segmentando audio.');
+    throw new errors.HumanError('Error splitting audio.');
   }
 
   return {
@@ -677,7 +687,7 @@ async function runInsightAgent({ client, results, style, styleFile, styleText, m
   const preset = normalizedStyle && STYLE_PRESETS[normalizedStyle];
   const customStyle = styleText || (styleFile ? await fs.readFile(path.resolve(styleFile), 'utf8') : '');
 
-  const spin = ui.spinner('Pensando...');
+  const spin = ui.spinner('Thinking...');
 
   try {
     const payload = buildAgentPayload({ results, styleKey: normalizedStyle, preset, customStyle });
@@ -706,20 +716,40 @@ async function runInsightAgent({ client, results, style, styleFile, styleText, m
       }
     });
 
-    spin.success('Listo');
+    spin.success('');
 
     const rawXml = extractResponseText(response)?.trim() ?? '';
+    ui.debug('Raw response length:', rawXml.length);
+    ui.debug('Raw response preview:', rawXml.slice(0, 300));
+
     const xml = extractResponseBlock(rawXml);
 
     if (!xml) {
-      ui.debug('No <response> block in:', rawXml.slice(0, 500));
+      ui.debug('No <response> block found');
+      // Si no hay XML pero hay texto, mostrarlo como fallback
+      if (rawXml.length > 0) {
+        return {
+          agentData: { reflection: '', plan: '', finalResponse: rawXml, title: '', xml: '', promptPath },
+          history: [userContent, response?.candidates?.[0]?.content].filter(Boolean)
+        };
+      }
       return null;
     }
 
     const reflection = extractTag(xml, 'internal_reflection');
     const plan = extractTag(xml, 'action_plan');
-    const finalResponse = extractTag(xml, 'final_response');
+    let finalResponse = extractTag(xml, 'final_response');
     const title = extractTag(xml, 'title');
+
+    // If no <final_response> tag, use content inside <response> directly
+    if (!finalResponse && xml) {
+      // Extract content between <response> and </response>, stripping the outer tags
+      const innerContent = xml.replace(/^<response[^>]*>/, '').replace(/<\/response>$/, '').trim();
+      if (innerContent) {
+        finalResponse = innerContent;
+        ui.debug('Using direct response content (no final_response tag)');
+      }
+    }
 
     const assistantContent = response?.candidates?.[0]?.content || null;
 
@@ -733,8 +763,8 @@ async function runInsightAgent({ client, results, style, styleFile, styleText, m
     ui.debug('Agent error:', error);
 
     if (error?.status === 429 || error?.message?.includes('quota')) {
-      throw new errors.HumanError('Límite de API alcanzado.', {
-        tip: 'Esperá unos minutos antes de volver a intentar.'
+      throw new errors.HumanError('API rate limit reached.', {
+        tip: 'Wait a few minutes before trying again.'
       });
     }
 
@@ -780,17 +810,17 @@ async function startConversationLoop({ client, results, options, config, convers
   const preset = normalizedStyle && STYLE_PRESETS[normalizedStyle];
 
   console.log('');
-  ui.clack.log.info('Modo chat activo. Escribí tu pregunta o "salir" para terminar.');
+  ui.clack.log.info('Chat mode. Type your question or "exit" to quit.');
 
   while (true) {
     const input = await ui.chatPrompt();
 
-    if (!input || input.toLowerCase() === 'salir') {
-      ui.clack.log.message('Hasta luego.');
+    if (!input || input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit') {
+      ui.clack.log.message('Goodbye.');
       break;
     }
 
-    const spin = ui.spinner('Pensando...');
+    const spin = ui.spinner('Thinking...');
 
     try {
       const payload = buildAgentPayload({
@@ -833,7 +863,7 @@ async function startConversationLoop({ client, results, options, config, convers
 
     } catch (error) {
       spin.error('Error');
-      errors.warn('No pude responder.', { verbose: options.verbose, technical: error.message });
+      errors.warn('Could not respond.', { verbose: options.verbose, technical: error.message });
     }
   }
 }
@@ -862,7 +892,7 @@ async function handleShowCommand(id, options = {}) {
     const run = await getRunById(id);
 
     if (!run) {
-      ui.clack.log.error(`No encontré el run: ${id}`);
+      ui.clack.log.error(`Entry not found: ${id}`);
       return;
     }
 
@@ -1132,7 +1162,7 @@ async function runExternalCommand(command, args) {
 
     child.on('error', error => {
       if (error.code === 'ENOENT') {
-        reject(new Error(`${command} no encontrado. Instalalo y asegurate que esté en el PATH.`));
+        reject(new Error(`${command} not found. Install it and make sure it's in your PATH.`));
         return;
       }
       reject(error);
@@ -1143,7 +1173,7 @@ async function runExternalCommand(command, args) {
         ui.debug('Command OK:', command);
         resolve();
       } else {
-        reject(new Error(`${command} falló con código ${code}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`));
+        reject(new Error(`${command} failed with code ${code}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`));
       }
     });
   });
@@ -1161,7 +1191,7 @@ async function runCommandCaptureStdout(command, args) {
     child.on('error', reject);
     child.on('exit', code => {
       if (code === 0) resolve(stdout);
-      else reject(new Error(`${command} falló: ${stderr.slice(0, 200)}`));
+      else reject(new Error(`${command} failed: ${stderr.slice(0, 200)}`));
     });
   });
 }
@@ -1378,26 +1408,26 @@ function showUsage() {
   console.log(`
   twx
 
-  Pegá una URL. Obtené el insight.
+  Paste a URL. Get the insight.
 
-  USO
-    twx <url>                   Twitter, YouTube, cualquier URL
-    twx <path>                  Archivos locales
-    twx list                    Historial
-    twx config                  Configurar API keys
+  USAGE
+    twx <url>                   Twitter, YouTube, any URL
+    twx <path>                  Local files
+    twx list                    History
+    twx config                  Setup API keys
 
-  ESTILOS
-    twx <url> musk              Directo, técnico (default)
-    twx <url> bukowski          Crudo, sin filtro
+  STYLES
+    twx <url> musk              Direct, technical (default)
+    twx <url> bukowski          Raw, unfiltered
     twx <url> brief             3 bullets
-    twx <url> raw               Solo transcripción
+    twx <url> raw               Transcript only
 
-  OPCIONES
-    --clip 0:30-2:00            Fragmento de video
-    --verbose                   Ver detalles técnicos
-    --top                       Modo TOP 5 insights
+  OPTIONS
+    --clip 0:30-2:00            Video segment
+    --verbose                   Show technical details
+    --top                       TOP 5 insights mode
 
-  EJEMPLOS
+  EXAMPLES
     twx https://x.com/user/status/123456
     twx https://youtube.com/watch?v=abc --clip 1:00-5:00
     twx ./screenshots/ bukowski

@@ -197,97 +197,97 @@ export async function runSetup(options = {}) {
   }
 
   console.log('');
-  clack.intro('Bienvenido a twx');
+  clack.intro('Welcome to twx');
 
   const missing = await getMissingKeys();
 
   if (missing.length === 0 && !force) {
-    clack.outro('Ya está todo configurado.');
+    clack.outro('Already configured.');
     return true;
   }
 
-  clack.log.info('Necesito algunas claves API para funcionar.\n');
+  clack.log.info('I need some API keys to work.\n');
 
   const updates = {};
 
-  // Mistral (requerido)
+  // Mistral (required)
   const mistralKey = await clack.text({
-    message: 'Tu clave de Mistral (para leer imágenes)',
+    message: 'Mistral API key (for reading images)',
     placeholder: 'sk-...',
     validate: (value) => {
       if (!value || value.trim() === '') {
-        return 'Esta clave es requerida para el OCR';
+        return 'This key is required for OCR';
       }
     }
   });
 
   if (clack.isCancel(mistralKey)) {
-    clack.cancel('Setup cancelado.');
+    clack.cancel('Setup cancelled.');
     process.exit(0);
   }
   updates.mistralApiKey = mistralKey.trim();
 
-  // Gemini (opcional pero recomendado)
+  // Gemini (optional but recommended)
   const geminiKey = await clack.text({
-    message: 'Tu clave de Google/Gemini (para análisis IA)',
-    placeholder: 'AIza... (Enter para omitir)',
+    message: 'Google/Gemini API key (for AI analysis)',
+    placeholder: 'AIza... (Enter to skip)',
     defaultValue: ''
   });
 
   if (clack.isCancel(geminiKey)) {
-    clack.cancel('Setup cancelado.');
+    clack.cancel('Setup cancelled.');
     process.exit(0);
   }
   if (geminiKey && geminiKey.trim()) {
     updates.geminiApiKey = geminiKey.trim();
   }
 
-  // OpenAI (opcional)
+  // OpenAI (optional)
   const openaiKey = await clack.text({
-    message: 'Tu clave de OpenAI (para transcribir audio)',
-    placeholder: 'sk-... (Enter para omitir)',
+    message: 'OpenAI API key (for audio transcription)',
+    placeholder: 'sk-... (Enter to skip)',
     defaultValue: ''
   });
 
   if (clack.isCancel(openaiKey)) {
-    clack.cancel('Setup cancelado.');
+    clack.cancel('Setup cancelled.');
     process.exit(0);
   }
   if (openaiKey && openaiKey.trim()) {
     updates.openaiApiKey = openaiKey.trim();
   }
 
-  // Estilo preferido
+  // Preferred style
   const style = await clack.select({
-    message: '¿Cómo querés que te hable?',
+    message: 'How should I talk?',
     options: [
-      { value: 'musk', label: 'Directo y técnico', hint: 'estilo Elon Musk' },
-      { value: 'bukowski', label: 'Crudo y sin filtro', hint: 'estilo Bukowski' },
-      { value: 'brief', label: 'Brief ejecutivo', hint: '3-5 bullets concisos' },
-      { value: 'raw', label: 'Solo datos', hint: 'sin interpretación IA' }
+      { value: 'musk', label: 'Direct & technical', hint: 'Elon Musk style' },
+      { value: 'bukowski', label: 'Raw & unfiltered', hint: 'Bukowski style' },
+      { value: 'brief', label: 'Executive brief', hint: '3-5 bullets' },
+      { value: 'raw', label: 'Data only', hint: 'no AI interpretation' }
     ]
   });
 
   if (clack.isCancel(style)) {
-    clack.cancel('Setup cancelado.');
+    clack.cancel('Setup cancelled.');
     process.exit(0);
   }
   updates.style = style;
 
-  // Guardar
+  // Save
   const spinner = clack.spinner();
-  spinner.start('Guardando configuración...');
+  spinner.start('Saving configuration...');
 
   const saved = await saveConfig(updates);
 
   if (saved) {
-    spinner.stop('Configuración guardada');
-    clack.log.success(`Archivo: ${CONFIG_FILE}`);
-    clack.outro('Listo. Ahora podés usar: twx <url>');
+    spinner.stop('Configuration saved');
+    clack.log.success(`File: ${CONFIG_FILE}`);
+    clack.outro('Ready. Now use: twx <url>');
     return true;
   } else {
-    spinner.stop('Error guardando configuración');
-    clack.log.error('No pude guardar la configuración. Revisá los permisos.');
+    spinner.stop('Error saving configuration');
+    clack.log.error('Could not save configuration. Check permissions.');
     return false;
   }
 }
@@ -313,28 +313,28 @@ export async function showConfig() {
   const config = await loadConfig();
 
   const maskKey = (key) => {
-    if (!key) return '(no configurada)';
+    if (!key) return '(not set)';
     if (key.length <= 8) return '****';
     return key.slice(0, 4) + '...' + key.slice(-4);
   };
 
   console.log('');
-  clack.intro('Configuración de twx');
+  clack.intro('twx configuration');
 
-  clack.log.info(`Archivo: ${CONFIG_FILE}\n`);
+  clack.log.info(`File: ${CONFIG_FILE}\n`);
 
   console.log('  API Keys:');
   console.log(`    Mistral:  ${maskKey(config.mistralApiKey)}`);
   console.log(`    Gemini:   ${maskKey(config.geminiApiKey)}`);
   console.log(`    OpenAI:   ${maskKey(config.openaiApiKey)}`);
   console.log('');
-  console.log('  Preferencias:');
-  console.log(`    Estilo:   ${config.style}`);
-  console.log(`    Modo:     ${config.mode}`);
-  console.log(`    Verbose:  ${config.verbose ? 'sí' : 'no'}`);
+  console.log('  Preferences:');
+  console.log(`    Style:    ${config.style}`);
+  console.log(`    Mode:     ${config.mode}`);
+  console.log(`    Verbose:  ${config.verbose ? 'yes' : 'no'}`);
   console.log('');
 
-  clack.outro('Usá "twx config --reset" para reconfigurar');
+  clack.outro('Use "twx config --reset" to reconfigure');
 }
 
 export { CONFIG_FILE, CONFIG_DIR };

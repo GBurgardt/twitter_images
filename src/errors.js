@@ -1,147 +1,147 @@
 /**
- * Módulo de errores humanos
+ * Human-friendly error module
  *
- * Traduce errores técnicos a mensajes que un humano puede entender.
- * Los detalles técnicos se muestran solo en modo verbose.
+ * Translates technical errors to human-readable messages.
+ * Technical details shown only in verbose mode.
  */
 
 import * as clack from '@clack/prompts';
 
 /**
- * Tipos de error conocidos
+ * Known error patterns
  */
 const ERROR_PATTERNS = [
   // API Keys
   {
     pattern: /MISTRAL_API_KEY|mistral.*api.*key/i,
-    message: 'Falta la clave de Mistral para leer imágenes.',
-    tip: 'Ejecutá "twx config" para configurar tus claves.'
+    message: 'Missing Mistral API key for image reading.',
+    tip: 'Run "twx config" to set up your keys.'
   },
   {
     pattern: /GEMINI_API_KEY|GOOGLE_API_KEY|gemini.*api.*key/i,
-    message: 'Falta la clave de Gemini/Google para el análisis.',
-    tip: 'Ejecutá "twx config" para configurar tus claves.'
+    message: 'Missing Gemini/Google API key for analysis.',
+    tip: 'Run "twx config" to set up your keys.'
   },
   {
     pattern: /OPENAI_API_KEY|openai.*api.*key/i,
-    message: 'Falta la clave de OpenAI para transcribir audio.',
-    tip: 'Ejecutá "twx config" para configurar tus claves.'
+    message: 'Missing OpenAI API key for audio transcription.',
+    tip: 'Run "twx config" to set up your keys.'
   },
 
   // Network errors
   {
     pattern: /ENOTFOUND|getaddrinfo|DNS/i,
-    message: 'No hay conexión a internet.',
-    tip: 'Verificá tu conexión y volvé a intentar.'
+    message: 'No internet connection.',
+    tip: 'Check your connection and try again.'
   },
   {
     pattern: /ECONNREFUSED|ECONNRESET|ETIMEDOUT/i,
-    message: 'No pude conectarme al servidor.',
-    tip: 'Puede ser un problema temporal. Intentá de nuevo en unos minutos.'
+    message: 'Could not connect to server.',
+    tip: 'This might be temporary. Try again in a few minutes.'
   },
 
   // HTTP errors
   {
     pattern: /401|unauthorized/i,
-    message: 'La clave API no es válida o expiró.',
-    tip: 'Verificá tus claves con "twx config" y actualizalas si es necesario.'
+    message: 'API key is invalid or expired.',
+    tip: 'Check your keys with "twx config" and update if needed.'
   },
   {
     pattern: /403|forbidden/i,
-    message: 'Acceso denegado.',
-    tip: 'Es posible que el contenido sea privado o esté restringido.'
+    message: 'Access denied.',
+    tip: 'Content may be private or restricted.'
   },
   {
     pattern: /404|not found/i,
-    message: 'No encontré ese contenido.',
-    tip: 'Puede que haya sido eliminado o que la URL esté mal.'
+    message: 'Content not found.',
+    tip: 'It may have been deleted or the URL is wrong.'
   },
   {
     pattern: /429|rate.?limit|quota|too many requests/i,
-    message: 'Demasiadas solicitudes. Alcanzaste el límite.',
-    tip: 'Esperá unos minutos antes de volver a intentar.'
+    message: 'Rate limit reached.',
+    tip: 'Wait a few minutes before trying again.'
   },
   {
     pattern: /500|502|503|504|internal.*server.*error/i,
-    message: 'El servidor está teniendo problemas.',
-    tip: 'Intentá de nuevo en unos minutos.'
+    message: 'Server is having issues.',
+    tip: 'Try again in a few minutes.'
   },
 
   // File errors
   {
     pattern: /ENOENT|file not found|no such file/i,
-    message: 'No encontré el archivo o carpeta.',
-    tip: 'Verificá que la ruta sea correcta.'
+    message: 'File or folder not found.',
+    tip: 'Check that the path is correct.'
   },
   {
     pattern: /EACCES|permission denied/i,
-    message: 'No tengo permisos para acceder a ese archivo.',
-    tip: 'Verificá los permisos del archivo o carpeta.'
+    message: 'No permission to access that file.',
+    tip: 'Check file or folder permissions.'
   },
 
   // Media errors
   {
     pattern: /ffmpeg.*not found|ffmpeg is required/i,
-    message: 'Necesito ffmpeg para procesar audio/video.',
-    tip: 'Instalalo con: brew install ffmpeg (Mac) o apt install ffmpeg (Linux)'
+    message: 'ffmpeg is required for audio/video processing.',
+    tip: 'Install with: brew install ffmpeg (Mac) or apt install ffmpeg (Linux)'
   },
   {
     pattern: /gallery-dl.*not found/i,
-    message: 'Necesito gallery-dl para descargar de Twitter.',
-    tip: 'Instalalo con: pip install gallery-dl'
+    message: 'gallery-dl is required for Twitter downloads.',
+    tip: 'Install with: pip install gallery-dl'
   },
   {
     pattern: /yt-dlp.*not found/i,
-    message: 'Necesito yt-dlp para descargar de YouTube.',
-    tip: 'Instalalo con: pip install yt-dlp'
+    message: 'yt-dlp is required for YouTube downloads.',
+    tip: 'Install with: pip install yt-dlp'
   },
 
   // OCR/Transcription errors
   {
     pattern: /ocr.*failed|ocr.*error/i,
-    message: 'No pude leer el texto de la imagen.',
-    tip: 'La imagen puede estar muy borrosa o no contener texto.'
+    message: 'Could not read text from image.',
+    tip: 'Image may be too blurry or contain no text.'
   },
   {
     pattern: /transcription.*failed|whisper.*error/i,
-    message: 'No pude transcribir el audio.',
-    tip: 'El audio puede estar muy distorsionado o en silencio.'
+    message: 'Could not transcribe audio.',
+    tip: 'Audio may be too distorted or silent.'
   },
 
   // Agent errors
   {
     pattern: /agent.*failed|generate.*content.*failed/i,
-    message: 'El análisis con IA falló.',
-    tip: 'Puede ser un problema temporal. Intentá de nuevo.'
+    message: 'AI analysis failed.',
+    tip: 'This might be temporary. Try again.'
   },
   {
     pattern: /invalid.*prompt|content.*policy/i,
-    message: 'El contenido fue rechazado por políticas de seguridad.',
-    tip: 'El material puede contener contenido que la IA no puede procesar.'
+    message: 'Content rejected by safety policies.',
+    tip: 'The material may contain content the AI cannot process.'
   },
 
   // Twitter/X specific
   {
     pattern: /tweet.*deleted|status.*unavailable/i,
-    message: 'Ese tweet ya no está disponible.',
-    tip: 'Puede haber sido eliminado o la cuenta es privada.'
+    message: 'That tweet is no longer available.',
+    tip: 'It may have been deleted or the account is private.'
   },
   {
     pattern: /protected.*tweets|private.*account/i,
-    message: 'Esa cuenta es privada.',
-    tip: 'Solo se puede acceder a contenido de cuentas públicas.'
+    message: 'That account is private.',
+    tip: 'Only public content can be accessed.'
   },
 
   // MongoDB
   {
     pattern: /mongo.*connect|mongodb.*error|ECONNREFUSED.*27017/i,
-    message: 'No pude conectar con la base de datos.',
-    tip: 'Si no necesitás historial, esto no afecta el funcionamiento básico.'
+    message: 'Could not connect to database.',
+    tip: 'If you don\'t need history, this won\'t affect basic functionality.'
   }
 ];
 
 /**
- * Traduce un error técnico a un mensaje humano
+ * Translate technical error to human message
  */
 export function humanize(error) {
   const message = error?.message || error?.toString?.() || String(error);
@@ -156,16 +156,16 @@ export function humanize(error) {
     }
   }
 
-  // Error genérico
+  // Generic error
   return {
-    message: 'Algo salió mal.',
-    tip: 'Usá --verbose para ver detalles técnicos.',
+    message: 'Something went wrong.',
+    tip: 'Use --verbose for technical details.',
     technical: message
   };
 }
 
 /**
- * Muestra un error de manera elegante
+ * Show error elegantly
  */
 export function show(error, options = {}) {
   const { verbose = false } = options;
@@ -180,7 +180,7 @@ export function show(error, options = {}) {
 
   if (verbose && humanized.technical) {
     console.log('');
-    clack.log.warn('Detalles técnicos:');
+    clack.log.warn('Technical details:');
     console.log(`  ${humanized.technical}`);
 
     if (error?.stack) {
@@ -197,7 +197,7 @@ export function show(error, options = {}) {
 }
 
 /**
- * Muestra un warning (no fatal)
+ * Show warning (non-fatal)
  */
 export function warn(message, options = {}) {
   const { verbose = false, technical = null } = options;
@@ -210,7 +210,7 @@ export function warn(message, options = {}) {
 }
 
 /**
- * Crea un error con mensaje humano
+ * Create error with human message
  */
 export class HumanError extends Error {
   constructor(humanMessage, options = {}) {
@@ -222,7 +222,7 @@ export class HumanError extends Error {
 }
 
 /**
- * Wraps una función async para capturar y mostrar errores
+ * Wrap async function to catch and show errors
  */
 export function withErrorHandling(fn, options = {}) {
   return async (...args) => {
