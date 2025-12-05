@@ -26,9 +26,8 @@ import { saveRun, listRuns, buildAutoTitle, getRunById } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-const AGENT_PROMPT_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt.txt');
-const LONG_AGENT_PROMPT_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt_long.txt');
-const TOP_AGENT_PROMPT_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt_top.txt');
+const AGENT_PROMPT_MUSK_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt_musk.txt');
+const AGENT_PROMPT_BUKOWSKI_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt_bukowski.txt');
 const DEFAULT_SESSION_LOG = path.join(PROJECT_ROOT, 'current_session.txt');
 
 // Load .env as fallback
@@ -59,18 +58,11 @@ const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.m4v']);
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg', '.opus']);
 const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.rtf']);
 
-const STYLE_PRESETS = {
-  musk: 'Resumí en español con la voz de Elon Musk: frases cortas, tono técnico y enfoque en próximos pasos y apuestas audaces.',
-  bukowski: 'Resumí en español como Charles Bukowski: crudo, directo, sin adornos pero con acciones claras.',
-  raw: 'Devuelve el texto original sin resumir ni comentar.',
-  brief: 'Armá un brief ejecutivo en tres viñetas con las ideas más filosas, siempre en español.'
-};
+const STYLE_PRESETS = { musk: '', bukowski: '' };
 
 const STYLE_ALIASES = {
   m: 'musk', mx: 'musk', max: 'musk', elon: 'musk', musk: 'musk',
-  buk: 'bukowski', bukowski: 'bukowski', bk: 'bukowski',
-  raw: 'raw', plain: 'raw', txt: 'raw',
-  brief: 'brief', sum: 'brief'
+  buk: 'bukowski', bukowski: 'bukowski', bk: 'bukowski'
 };
 
 const TWITTER_HOSTS = new Set(['twitter.com', 'www.twitter.com', 'x.com', 'www.x.com', 'mobile.twitter.com']);
@@ -216,22 +208,7 @@ async function main() {
     spin.success('Done');
 
     // Raw mode: show transcriptions only
-    const normalizedStyle = normalizeStyle(options.style || config.style);
-    const rawMode = normalizedStyle === 'raw' && !options.styleFile && !options.styleText;
-
-    if (rawMode) {
-      const combined = results
-        .filter(r => r.text)
-        .map(r => r.text)
-        .join('\n\n');
-
-      if (combined) {
-        ui.showRawResult(combined, { label: 'Transcription' });
-      }
-
-      await persistRun({ options, config, results, agentData: null, rawMode: true, agentProvider });
-      return;
-    }
+    const normalizedStyle = normalizeStyle(options.style || config.style) || 'musk';
 
     // Ejecutar agente IA
     let agentData = null;
@@ -694,12 +671,12 @@ async function readPlainText(filePath, inlineText = null) {
 // ============ AGENT ============
 
 async function runInsightAgent({ provider, geminiClient, anthropicClient, results, style, styleFile, styleText, mode, config }) {
-  const promptPath = resolveAgentPromptPath(mode);
+  const normalizedStyle = normalizeStyle(style) || 'musk';
+  const promptPath = resolveAgentPromptPath(normalizedStyle);
   const promptSource = await fs.readFile(promptPath, 'utf8');
 
   const providerKey = provider === 'claude' ? 'claude' : 'gemini';
-  const normalizedStyle = normalizeStyle(style);
-  const preset = normalizedStyle && STYLE_PRESETS[normalizedStyle];
+  const preset = '';
   const customStyle = styleText || (styleFile ? await fs.readFile(path.resolve(styleFile), 'utf8') : '');
   const defaultGeminiModel = 'gemini-3-pro-preview';
   const defaultClaudeModel = 'claude-opus-4.5';
@@ -848,10 +825,10 @@ function buildAgentPayload({ results, styleKey, preset, customStyle }) {
 // ============ CHAT ============
 
 async function startConversationLoop({ client, results, options, config, conversationHistory }) {
-  const promptPath = resolveAgentPromptPath(options.mode || config.mode);
+  const normalizedStyle = normalizeStyle(options.style || config.style) || 'musk';
+  const promptPath = resolveAgentPromptPath(normalizedStyle);
   const promptSource = await fs.readFile(promptPath, 'utf8');
-  const normalizedStyle = normalizeStyle(options.style || config.style);
-  const preset = normalizedStyle && STYLE_PRESETS[normalizedStyle];
+  const preset = '';
   const chatModel = (config.agentModel && config.agentModel.toLowerCase().includes('gemini'))
     ? config.agentModel
     : 'gemini-3-pro-preview';
@@ -1335,11 +1312,10 @@ function normalizeStyle(value) {
   return STYLE_ALIASES[key] || (STYLE_PRESETS[key] ? key : null);
 }
 
-function resolveAgentPromptPath(mode) {
-  const key = (mode || '').toLowerCase();
-  if (key === 'long' || key === 'longform' || key === 'extenso') return LONG_AGENT_PROMPT_PATH;
-  if (key === 'top' || key === 'top5' || key === 'ranking') return TOP_AGENT_PROMPT_PATH;
-  return AGENT_PROMPT_PATH;
+function resolveAgentPromptPath(style) {
+  const key = normalizeStyle(style) || 'musk';
+  if (key === 'bukowski') return AGENT_PROMPT_BUKOWSKI_PATH;
+  return AGENT_PROMPT_MUSK_PATH;
 }
 
 function extractResponseText(response, provider = 'gemini') {
@@ -1472,9 +1448,6 @@ function parseArgs(argv) {
     if (arg === '--style') { options.style = argv[++i]; continue; }
     if (arg === '--style-file') { options.styleFile = argv[++i]; continue; }
     if (arg === '--style-text') { options.styleText = argv[++i]; continue; }
-    if (arg === '--mode') { options.mode = argv[++i]; continue; }
-    if (arg === '--long' || arg === '--longform') { options.mode = 'long'; continue; }
-    if (arg === '--top' || arg === '--top5') { options.mode = 'top'; continue; }
     if (arg === '--verbose' || arg === '--debug') { options.verbose = true; continue; }
     if (arg === '--transcript' || arg === '--show-transcript') { options.showTranscript = true; continue; }
     if (arg === '--help' || arg === '-h') { showUsage(); process.exit(0); }
@@ -1554,15 +1527,12 @@ function showUsage() {
     twx setmodel opus           Switch AI provider (gemini|opus|claude)
 
   STYLES
-    twx <url> musk              Direct, technical (default)
-    twx <url> bukowski          Raw, unfiltered
-    twx <url> brief             3 bullets
-    twx <url> raw               Transcript only
+    twx <url> musk              Voz Elon Musk (prompt base Musk)
+    twx <url> bukowski          Voz Charles Bukowski (prompt base Bukowski)
 
   OPTIONS
     --clip 0:30-2:00            Video segment
     --verbose                   Show technical details
-    --top                       TOP 5 insights mode
 
   EXAMPLES
     twx https://x.com/user/status/123456
