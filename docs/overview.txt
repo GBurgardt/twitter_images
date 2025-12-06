@@ -1,0 +1,37 @@
+twx - Twitter/X Media Insight CLI
+----------------------------------
+
+¿Qué hace?
+- Toma un link o carpeta con medios (Twitter/X, YouTube, Instagram, otros) y extrae texto: OCR a imágenes (Mistral), transcribe audio/video (OpenAI Whisper), agrega contexto de metadatos.
+- Si hay texto, un agente IA (Gemini por defecto, o Claude si lo configuras) devuelve un insight en formato XML con reflexión, plan y respuesta final en voz “Musk” o “Bukowski”.
+- Guarda cada corrida en MongoDB para histórico y chat posterior (solo en modo Gemini).
+
+Uso típico
+- `twx <url>` o `twx <path>`; segundo argumento opcional es estilo (`musk` o `bukowski`).
+- Segmentos de video: `--clip 0:30-2:00`.
+- Cambiar proveedor/modelo: `twx setmodel gemini` o `twx setmodel opus`.
+- Ver historial: `twx list`; mostrar una corrida: `twx show <id>`.
+
+Config mínima
+- MISTRAL_API_KEY (requerido) para OCR.
+- GEMINI_API_KEY o GOOGLE_API_KEY (recomendado) para análisis IA.
+- ANTHROPIC_API_KEY (opcional) si usas Claude.
+- OPENAI_API_KEY (opcional) para transcripciones audio/video.
+- Archivo de config en ~/.config/twx/config.json; variables pueden venir de entorno.
+
+Archivos clave
+- `bin/twx.js`: wrapper CLI.
+- `src/extract-text.js`: flujo principal (descarga, OCR/Whisper, agente IA, historial).
+- `src/config.js`: carga/guarda config y API keys.
+- `src/db.js`: persistencia MongoDB.
+- `prompts/agent_prompt_musk.txt`, `prompts/agent_prompt_bukowski.txt`: prompts base del agente (estructura XML, voz).
+
+Pipeline rápido
+1) Descargar contenido (yt-dlp para video/IG/YouTube; gallery-dl para otros).
+2) Detectar tipo y extraer texto (OCR o Whisper).
+3) Construir payload y enviar al LLM con el prompt base elegido.
+4) Mostrar respuesta, guardar en historial, opcionalmente abrir chat (Gemini).
+
+Notas
+- Solo dos estilos soportados: musk y bukowski (por aliases: m/mx/max/elon/buk/bk).
+- Salida del agente siempre en español, en bloque XML con <title>, <internal_reflection>, <action_plan>, <final_response>.

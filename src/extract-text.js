@@ -66,7 +66,10 @@ const STYLE_ALIASES = {
 };
 
 const TWITTER_HOSTS = new Set(['twitter.com', 'www.twitter.com', 'x.com', 'www.x.com', 'mobile.twitter.com']);
-const YOUTUBE_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be']);
+const YTDLP_HOSTS = new Set([
+  'youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be',
+  'instagram.com', 'www.instagram.com', 'instagr.am'
+]);
 
 // ============ MAIN ============
 
@@ -354,7 +357,7 @@ async function downloadRemoteMedia(url, config) {
 
   const downloadRoot = config.downloadRoot || path.join(os.tmpdir(), 'twx-gallery-dl');
 
-  if (YOUTUBE_HOSTS.has(hostname)) {
+  if (YTDLP_HOSTS.has(hostname)) {
     return downloadWithYtDlp(url, downloadRoot);
   }
 
