@@ -71,6 +71,11 @@ const YTDLP_HOSTS = new Set([
   'instagram.com', 'www.instagram.com', 'instagr.am'
 ]);
 const REDDIT_HOSTS = new Set(['reddit.com', 'www.reddit.com', 'old.reddit.com']);
+const TWITTER_THREAD_API = process.env.TWITTER_THREAD_API_URL || 'https://superexplainer.app/twitter-api/scrape_thread/';
+const TWITTER_THREAD_MAX_TWEETS = (() => {
+  const val = Number(process.env.TWITTER_THREAD_MAX_TWEETS) || 100;
+  return Number.isFinite(val) ? Math.min(100, Math.max(1, val)) : 100;
+})();
 
 // ============ MAIN ============
 
@@ -305,7 +310,7 @@ async function collectMediaItems(options, config) {
   }
 
   if (options.url) {
-    const download = await downloadRemoteMedia(options.url, config);
+    const download = await downloadRemoteMedia(options.url, config, { thread: options.thread });
     items.push(...download.items);
 
     if (download.baseDir && !config.keepDownloads) {
@@ -346,7 +351,7 @@ function getMediaType(filePath) {
 
 // ============ DOWNLOAD ============
 
-async function downloadRemoteMedia(url, config) {
+async function downloadRemoteMedia(url, config, { thread = false } = {}) {
   let hostname;
   try {
     hostname = new URL(url).hostname.toLowerCase();
@@ -358,18 +363,24 @@ async function downloadRemoteMedia(url, config) {
 
   const downloadRoot = config.downloadRoot || path.join(os.tmpdir(), 'twx-gallery-dl');
 
+  const threadTextItems = [];
+  if (thread && TWITTER_HOSTS.has(hostname)) {
+    const threadItem = await fetchTwitterThread(url);
+    if (threadItem) threadTextItems.push(threadItem);
+  }
+
   if (REDDIT_HOSTS.has(hostname)) {
     const redditTextItem = await collectTextFromRedditUrl(url, config);
-    return { baseDir: null, items: redditTextItem ? [redditTextItem] : [] };
+    return { baseDir: null, items: [...threadTextItems, ...(redditTextItem ? [redditTextItem] : [])] };
   }
 
   if (YTDLP_HOSTS.has(hostname)) {
     const ytResult = await downloadWithYtDlp(url, downloadRoot);
-    return ytResult;
+    return { ...ytResult, items: [...threadTextItems, ...ytResult.items] };
   }
 
   const galleryResult = await downloadWithGalleryDl(url, downloadRoot);
-  return galleryResult;
+  return { ...galleryResult, items: [...threadTextItems, ...galleryResult.items] };
 }
 
 async function downloadWithGalleryDl(url, downloadRoot) {
@@ -1287,6 +1298,63 @@ function extractPrimaryText(meta) {
   return '';
 }
 
+async function fetchTwitterThread(tweetUrl) {
+  const apiUrl = new URL(TWITTER_THREAD_API);
+  apiUrl.searchParams.set('tweet_url', tweetUrl);
+  apiUrl.searchParams.set('max_tweets', String(TWITTER_THREAD_MAX_TWEETS));
+
+  ui.debug('Fetching Twitter thread from API:', apiUrl.toString());
+
+  let response;
+  try {
+    response = await fetch(apiUrl.toString(), {
+      method: 'GET',
+      headers: { 'accept': 'application/json' },
+      redirect: 'follow'
+    });
+  } catch (error) {
+    ui.debug('Thread API network error:', error?.message || error);
+    throw new errors.HumanError('No pude obtener el hilo completo (API).', {
+      tip: 'Verifica la conectividad con el endpoint de thread y reintenta.'
+    });
+  }
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    ui.debug('Thread API HTTP error:', response.status, body.slice(0, 500));
+    throw new errors.HumanError(`El API de hilos devolvió ${response.status}`, {
+      tip: 'Revisa que la URL de tweet sea pública o vuelve a intentar más tarde.'
+    });
+  }
+
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new errors.HumanError('Respuesta inválida del API de hilos.', {
+      tip: 'El endpoint no devolvió JSON válido.'
+    });
+  }
+
+  if (!data?.tweets || !Array.isArray(data.tweets) || !data.tweets.length) {
+    throw new errors.HumanError('El API no devolvió tweets para este hilo.', {
+      tip: data?.message || 'Asegúrate de usar la URL completa del tweet.'
+    });
+  }
+
+  const author = data.tweets[0]?.author_handle || data.thread_author || 'autor';
+  const parts = data.tweets.map((tweet, idx) => {
+    const num = idx + 1;
+    const total = data.tweets.length;
+    const text = tweet?.text || '';
+    const likes = tweet?.likes != null ? `❤️ ${tweet.likes} likes` : '';
+    return `Tweet ${num}/${total} @${tweet?.author_handle || author} (${tweet?.author_name || ''}):\n${text}\n${likes}`.trim();
+  });
+
+  const inlineText = `HILO COMPLETO (${parts.length} tweets)\n\n${parts.join('\n\n---\n\n')}`;
+  return { path: `${tweetUrl}#thread`, type: 'text', inlineText };
+}
+
 function parseTweetInfo(rawUrl) {
   try {
     const { hostname, pathname } = new URL(rawUrl);
@@ -1470,6 +1538,7 @@ function parseArgs(argv) {
     modelValue: null,
     showId: null,
     directive: null,
+    thread: false,
     clipStart: null,
     clipEnd: null,
     clipRange: null,
@@ -1524,6 +1593,7 @@ function parseArgs(argv) {
     if (arg === '--style-text') { options.styleText = argv[++i]; continue; }
     if (arg === '--verbose' || arg === '--debug') { options.verbose = true; continue; }
     if (arg === '--transcript' || arg === '--show-transcript') { options.showTranscript = true; continue; }
+    if (arg === '--thread') { options.thread = true; continue; }
     if (arg === '--help' || arg === '-h') { showUsage(); process.exit(0); }
 
     // Clip flags
@@ -1607,6 +1677,7 @@ function showUsage() {
   USAGE
     twx <url>                   Twitter, YouTube, any URL
     twx <url> "<instrucción>"   Añade una directiva opcional que el modelo debe priorizar
+    twx <url> --thread          Si es un tweet, extrae el hilo completo vía API
     twx <path>                  Local files
     twx list                    History
     twx config                  Setup API keys

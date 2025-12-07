@@ -9,6 +9,7 @@ twx - Twitter/X Media Insight CLI
 Uso típico
 - `twx <url>` o `twx <path>`; estilo por defecto: `bukowski`. Para Musk usa alias `m`, `mx`, `max`, `elon`, `musk` (el estilo no se guarda en config, se elige en cada comando).
 - Puedes añadir una directiva final: `twx <url> "<instrucción>"` (si el segundo argumento no es alias de estilo se usa como objetivo prioritario).
+- Para hilos de Twitter/X: `twx <url-del-tweet> --thread` usa el scraper remoto (https://superexplainer.app/twitter-api/scrape_thread/) y devuelve texto del hilo completo (límite: 100 tweets).
 - Alias Reddit: `twr <reddit_url>` (usa el mismo pipeline).
 - Segmentos de video: `--clip 0:30-2:00`.
 - Cambiar proveedor/modelo: `twx setmodel gemini` o `twx setmodel opus`.
