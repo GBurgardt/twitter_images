@@ -5,7 +5,8 @@
   "type": "module",
   "main": "index.js",
   "bin": {
-    "twx": "./bin/twx.js"
+    "twx": "./bin/twx.js",
+    "twr": "./bin/twr.js"
   },
   "scripts": {
     "ocr": "node src/extract-text.js",

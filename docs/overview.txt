@@ -8,15 +8,19 @@ twx - Twitter/X Media Insight CLI
 
 Uso típico
 - `twx <url>` o `twx <path>`; estilo por defecto: `bukowski`. Para Musk usa alias `m`, `mx`, `max`, `elon`, `musk` (el estilo no se guarda en config, se elige en cada comando).
+- Alias Reddit: `twr <reddit_url>` (usa el mismo pipeline).
 - Segmentos de video: `--clip 0:30-2:00`.
 - Cambiar proveedor/modelo: `twx setmodel gemini` o `twx setmodel opus`.
 - Ver historial: `twx list`; mostrar una corrida: `twx show <id>`.
+- Reddit se lee solo vía API oficial (PRAW); sin credenciales no se procesa el texto.
 
 Config mínima
 - MISTRAL_API_KEY (requerido) para OCR.
 - GEMINI_API_KEY o GOOGLE_API_KEY (recomendado) para análisis IA.
 - ANTHROPIC_API_KEY (opcional) si usas Claude.
 - OPENAI_API_KEY (opcional) para transcripciones audio/video.
+- REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET / REDDIT_USER_AGENT (opcional; requeridos para texto vía PRAW).
+- Python `praw` debe estar instalado para Reddit (`pip install praw`).
 - Archivo de config en ~/.config/twx/config.json; variables pueden venir de entorno.
 
 Archivos clave

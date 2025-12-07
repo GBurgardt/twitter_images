@@ -70,6 +70,7 @@ const YTDLP_HOSTS = new Set([
   'youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be',
   'instagram.com', 'www.instagram.com', 'instagr.am'
 ]);
+const REDDIT_HOSTS = new Set(['reddit.com', 'www.reddit.com', 'old.reddit.com']);
 
 // ============ MAIN ============
 
@@ -356,11 +357,20 @@ async function downloadRemoteMedia(url, config) {
 
   const downloadRoot = config.downloadRoot || path.join(os.tmpdir(), 'twx-gallery-dl');
 
-  if (YTDLP_HOSTS.has(hostname)) {
-    return downloadWithYtDlp(url, downloadRoot);
+  let redditTextItem = null;
+  if (REDDIT_HOSTS.has(hostname)) {
+    redditTextItem = await collectTextFromRedditUrl(url, config);
   }
 
-  return downloadWithGalleryDl(url, downloadRoot);
+  if (YTDLP_HOSTS.has(hostname)) {
+    const ytResult = await downloadWithYtDlp(url, downloadRoot);
+    if (redditTextItem) ytResult.items.push(redditTextItem);
+    return ytResult;
+  }
+
+  const galleryResult = await downloadWithGalleryDl(url, downloadRoot);
+  if (redditTextItem) galleryResult.items.push(redditTextItem);
+  return galleryResult;
 }
 
 async function downloadWithGalleryDl(url, downloadRoot) {
@@ -1210,6 +1220,52 @@ async function collectTextFromFxApi(rawUrl) {
   return null;
 }
 
+async function collectTextFromRedditUrl(rawUrl, config) {
+  const env = {
+    REDDIT_CLIENT_ID: config.redditClientId || process.env.REDDIT_CLIENT_ID || '',
+    REDDIT_CLIENT_SECRET: config.redditClientSecret || process.env.REDDIT_CLIENT_SECRET || '',
+    REDDIT_USER_AGENT: config.redditUserAgent || process.env.REDDIT_USER_AGENT || 'twx-reddit/0.1'
+  };
+
+  if (!env.REDDIT_CLIENT_ID || !env.REDDIT_CLIENT_SECRET) {
+    throw new errors.HumanError('Faltan credenciales de Reddit para usar la API oficial.', {
+      tip: 'Define REDDIT_CLIENT_ID y REDDIT_CLIENT_SECRET en tu .env o ejecuta "twx config".'
+    });
+  }
+
+  const scriptPath = path.join(PROJECT_ROOT, 'bin', 'fetch_reddit.py');
+  let pythonCmd = 'python3';
+
+  try {
+    await fs.access(path.join(PROJECT_ROOT, '.venv', 'bin', 'python3'));
+    pythonCmd = path.join(PROJECT_ROOT, '.venv', 'bin', 'python3');
+  } catch { /* fallback to system python3 */ }
+
+  try {
+    const raw = await runExternalCommand(pythonCmd, [scriptPath, rawUrl], { env });
+    const data = JSON.parse(raw);
+    const chunks = [];
+    if (data.title) chunks.push(`Título: ${data.title}`);
+    if (data.selftext) chunks.push(`Post:\n${data.selftext}`);
+    if (Array.isArray(data.comments) && data.comments.length) {
+      const commentBlock = data.comments.map((c, i) => `Comentario ${i + 1}:\n${c}`).join('\n\n');
+      chunks.push(commentBlock);
+    }
+    if (data.subreddit) chunks.push(`Subreddit: ${data.subreddit}`);
+    if (data.author) chunks.push(`Autor: ${data.author}`);
+    if (data.comment_count != null) chunks.push(`Comentarios totales: ${data.comment_count}`);
+    if (!chunks.length) return null;
+
+    return { path: rawUrl, type: 'text', inlineText: chunks.join('\n\n') };
+  } catch (error) {
+    ui.debug('collectTextFromRedditUrl error:', error.message);
+    throw new errors.HumanError('No pude recuperar el post de Reddit usando la API oficial.', {
+      tip: 'Verifica que la URL sea pública y que las credenciales de Reddit sean correctas.',
+      technical: error.message
+    });
+  }
+}
+
 function extractPrimaryText(meta) {
   if (!meta || typeof meta !== 'object') return '';
   const fields = ['tweet_text', 'full_text', 'text', 'description', 'caption', 'title', 'summary', 'content'];
@@ -1245,14 +1301,19 @@ function parseTweetInfo(rawUrl) {
 
 // ============ UTILITIES ============
 
-async function runExternalCommand(command, args) {
+async function runExternalCommand(command, args, options = {}) {
   ui.debug('Executing:', command, args);
 
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: options.env ? { ...process.env, ...options.env } : process.env
+    });
     let stderr = '';
+    let stdout = '';
 
     child.stderr?.on('data', chunk => stderr += chunk.toString());
+    child.stdout?.on('data', chunk => stdout += chunk.toString());
 
     child.on('error', error => {
       if (error.code === 'ENOENT') {
@@ -1265,7 +1326,7 @@ async function runExternalCommand(command, args) {
     child.on('exit', code => {
       if (code === 0) {
         ui.debug('Command OK:', command);
-        resolve();
+        resolve(stdout);
       } else {
         reject(new Error(`${command} failed with code ${code}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`));
       }

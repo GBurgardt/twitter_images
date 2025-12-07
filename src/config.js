@@ -71,6 +71,9 @@ function getEnvValue(key) {
     geminiApiKey: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
     anthropicApiKey: ['ANTHROPIC_API_KEY', 'CLAUDE_API_KEY'],
     openaiApiKey: ['OPENAI_API_KEY'],
+    redditClientId: ['REDDIT_CLIENT_ID'],
+    redditClientSecret: ['REDDIT_CLIENT_SECRET'],
+    redditUserAgent: ['REDDIT_USER_AGENT'],
     mongodbUrl: ['MONGODB_URL', 'MONGO_URL', 'MONGO_URI'],
     agentProvider: ['TWX_AGENT_PROVIDER'],
     mode: ['TWX_MODE'],
@@ -119,6 +122,9 @@ export async function loadConfig() {
     geminiApiKey: getEnvValue('geminiApiKey') || fileConfig.geminiApiKey || null,
     anthropicApiKey: getEnvValue('anthropicApiKey') || fileConfig.anthropicApiKey || null,
     openaiApiKey: getEnvValue('openaiApiKey') || fileConfig.openaiApiKey || null,
+    redditClientId: getEnvValue('redditClientId') || fileConfig.redditClientId || null,
+    redditClientSecret: getEnvValue('redditClientSecret') || fileConfig.redditClientSecret || null,
+    redditUserAgent: getEnvValue('redditUserAgent') || fileConfig.redditUserAgent || null,
     mongodbUrl: getEnvValue('mongodbUrl') || fileConfig.mongodbUrl || 'mongodb://localhost:27017/twx_history',
     mistralOrgId: getEnvValue('mistralOrgId') || fileConfig.mistralOrgId || null,
 
@@ -193,6 +199,9 @@ export async function getMissingKeys() {
     missing.push({ key: 'anthropicApiKey', name: 'Anthropic/Claude', required: true, purpose: 'análisis con IA (proveedor Claude)' });
   } else if (!config.anthropicApiKey) {
     missing.push({ key: 'anthropicApiKey', name: 'Anthropic/Claude', required: false, purpose: 'Claude como alternativo' });
+  }
+  if (!config.redditClientId || !config.redditClientSecret) {
+    missing.push({ key: 'redditKeys', name: 'Reddit', required: false, purpose: 'recuperar texto de posts vía PRAW' });
   }
   if (!config.openaiApiKey) {
     missing.push({ key: 'openaiApiKey', name: 'OpenAI', required: false, purpose: 'transcribir audio/video' });
@@ -287,6 +296,40 @@ export async function runSetup(options = {}) {
     updates.openaiApiKey = openaiKey.trim();
   }
 
+  // Reddit (opcional, para texto vía PRAW)
+  const redditClientId = await clack.text({
+    message: 'Reddit client_id (for PRAW text fetch)',
+    placeholder: '(Enter to skip)',
+    defaultValue: ''
+  });
+  if (clack.isCancel(redditClientId)) {
+    clack.cancel('Setup cancelled.');
+    process.exit(0);
+  }
+  const redditClientSecret = await clack.text({
+    message: 'Reddit client_secret (for PRAW text fetch)',
+    placeholder: '(Enter to skip)',
+    defaultValue: ''
+  });
+  if (clack.isCancel(redditClientSecret)) {
+    clack.cancel('Setup cancelled.');
+    process.exit(0);
+  }
+  const redditUserAgent = await clack.text({
+    message: 'Reddit user agent (for PRAW text fetch)',
+    placeholder: 'twx-reddit/0.1 (Enter to skip)',
+    defaultValue: 'twx-reddit/0.1'
+  });
+  if (clack.isCancel(redditUserAgent)) {
+    clack.cancel('Setup cancelled.');
+    process.exit(0);
+  }
+  if (redditClientId && redditClientId.trim() && redditClientSecret && redditClientSecret.trim()) {
+    updates.redditClientId = redditClientId.trim();
+    updates.redditClientSecret = redditClientSecret.trim();
+    updates.redditUserAgent = redditUserAgent?.trim() || 'twx-reddit/0.1';
+  }
+
   // Save
   const spinner = clack.spinner();
   spinner.start('Saving configuration...');
@@ -341,6 +384,7 @@ export async function showConfig() {
   console.log(`    Gemini:   ${maskKey(config.geminiApiKey)}`);
   console.log(`    Anthropic: ${maskKey(config.anthropicApiKey)}`);
   console.log(`    OpenAI:   ${maskKey(config.openaiApiKey)}`);
+  console.log(`    Reddit:   ${maskKey(config.redditClientId)}/${maskKey(config.redditClientSecret)}`);
   console.log('');
   console.log('  Preferences:');
   console.log(`    Agent:    ${config.agentProvider} (${config.agentModel || 'auto'})`);
