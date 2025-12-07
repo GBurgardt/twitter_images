@@ -357,19 +357,17 @@ async function downloadRemoteMedia(url, config) {
 
   const downloadRoot = config.downloadRoot || path.join(os.tmpdir(), 'twx-gallery-dl');
 
-  let redditTextItem = null;
   if (REDDIT_HOSTS.has(hostname)) {
-    redditTextItem = await collectTextFromRedditUrl(url, config);
+    const redditTextItem = await collectTextFromRedditUrl(url, config);
+    return { baseDir: null, items: redditTextItem ? [redditTextItem] : [] };
   }
 
   if (YTDLP_HOSTS.has(hostname)) {
     const ytResult = await downloadWithYtDlp(url, downloadRoot);
-    if (redditTextItem) ytResult.items.push(redditTextItem);
     return ytResult;
   }
 
   const galleryResult = await downloadWithGalleryDl(url, downloadRoot);
-  if (redditTextItem) galleryResult.items.push(redditTextItem);
   return galleryResult;
 }
 
