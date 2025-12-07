@@ -18,7 +18,6 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 // Defaults
 const DEFAULTS = {
   agentProvider: 'gemini',
-  style: 'musk',
   mode: 'standard',
   verbose: false,
   keepDownloads: false,
@@ -74,7 +73,6 @@ function getEnvValue(key) {
     openaiApiKey: ['OPENAI_API_KEY'],
     mongodbUrl: ['MONGODB_URL', 'MONGO_URL', 'MONGO_URI'],
     agentProvider: ['TWX_AGENT_PROVIDER'],
-    style: ['TWX_DEFAULT_STYLE'],
     mode: ['TWX_MODE'],
     verbose: ['TWX_DEBUG'],
     keepDownloads: ['TWX_KEEP_DOWNLOADS'],
@@ -126,7 +124,6 @@ export async function loadConfig() {
 
     // Preferences
     agentProvider: (getEnvValue('agentProvider') || fileConfig.agentProvider || DEFAULTS.agentProvider || 'gemini').toString().toLowerCase(),
-    style: getEnvValue('style') || fileConfig.style || DEFAULTS.style,
     mode: getEnvValue('mode') || fileConfig.mode || DEFAULTS.mode,
     verbose: getEnvValue('verbose') || fileConfig.verbose || DEFAULTS.verbose,
     keepDownloads: getEnvValue('keepDownloads') || fileConfig.keepDownloads || DEFAULTS.keepDownloads,
@@ -290,23 +287,6 @@ export async function runSetup(options = {}) {
     updates.openaiApiKey = openaiKey.trim();
   }
 
-  // Preferred style
-  const style = await clack.select({
-    message: 'How should I talk?',
-    options: [
-      { value: 'musk', label: 'Direct & technical', hint: 'Elon Musk style' },
-      { value: 'bukowski', label: 'Raw & unfiltered', hint: 'Bukowski style' },
-      { value: 'brief', label: 'Executive brief', hint: '3-5 bullets' },
-      { value: 'raw', label: 'Data only', hint: 'no AI interpretation' }
-    ]
-  });
-
-  if (clack.isCancel(style)) {
-    clack.cancel('Setup cancelled.');
-    process.exit(0);
-  }
-  updates.style = style;
-
   // Save
   const spinner = clack.spinner();
   spinner.start('Saving configuration...');
@@ -365,7 +345,6 @@ export async function showConfig() {
   console.log('  Preferences:');
   console.log(`    Agent:    ${config.agentProvider} (${config.agentModel || 'auto'})`);
   console.log(`    Max out:  ${config.agentMaxOutputTokens} tokens`);
-  console.log(`    Style:    ${config.style}`);
   console.log(`    Mode:     ${config.mode}`);
   console.log(`    Verbose:  ${config.verbose ? 'yes' : 'no'}`);
   console.log('');

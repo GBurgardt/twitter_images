@@ -181,71 +181,72 @@ export async function showHistoryList(runs, options = {}) {
 }
 
 /**
- * Prompt de chat elegante
+ * Prompt de chat - multilinea por defecto
+ *
+ * - Enter = nueva línea
+ * - Línea vacía (doble Enter) = enviar
+ * - Ctrl+D = enviar
  */
 export async function chatPrompt(options = {}) {
-  const { placeholder = 'Type your question...' } = options;
-
-  const input = await clack.text({
-    message: 'ask',
-    placeholder,
-    defaultValue: ''
-  });
-
-  if (clack.isCancel(input)) {
-    return null;
-  }
-
-  return input?.trim() || null;
-}
-
-/**
- * Prompt de chat multilinea (para preguntas largas)
- */
-export async function chatMultiline() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     return null;
   }
 
-  console.log('');
-  clack.log.message('Escribí tu pregunta (Enter para enviar, Ctrl+C para salir)');
-
   const rl = readline.createInterface({
     input: process.stdin,
-    output: process.stdout
+    output: process.stdout,
+    prompt: '› '
   });
 
   return new Promise((resolve) => {
     const lines = [];
+    let resolved = false;
 
-    const prompt = () => {
-      rl.question('  › ', (line) => {
-        if (line === '' && lines.length > 0) {
-          rl.close();
-          resolve(lines.join('\n').trim());
-          return;
-        }
-        if (line.toLowerCase() === '/q' || line.toLowerCase() === 'salir') {
-          rl.close();
-          resolve(null);
-          return;
-        }
-        lines.push(line);
-        prompt();
-      });
+    const finish = (result) => {
+      if (resolved) return;
+      resolved = true;
+      rl.close();
+      resolve(result);
     };
 
-    rl.on('close', () => {
-      if (lines.length > 0) {
-        resolve(lines.join('\n').trim());
-      } else {
-        resolve(null);
+    rl.on('line', (line) => {
+      // Primera línea vacía = cancelar
+      if (line === '' && lines.length === 0) {
+        finish(null);
+        return;
       }
+
+      // Línea vacía después de contenido = enviar
+      if (line === '' && lines.length > 0) {
+        finish(lines.join('\n').trim() || null);
+        return;
+      }
+
+      // exit/quit en primera línea
+      if (lines.length === 0 && (line.toLowerCase() === 'exit' || line.toLowerCase() === 'quit')) {
+        finish(line);
+        return;
+      }
+
+      lines.push(line);
+      rl.setPrompt('  ');
+      rl.prompt();
     });
 
-    prompt();
+    // Ctrl+D = enviar lo que hay
+    rl.on('close', () => {
+      finish(lines.length > 0 ? lines.join('\n').trim() : null);
+    });
+
+    // Ctrl+C = cancelar
+    rl.on('SIGINT', () => {
+      finish(null);
+    });
+
+    rl.prompt();
   });
 }
+
 
 /**
  * Confirmar acción

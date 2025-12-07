@@ -210,8 +210,7 @@ async function main() {
 
     spin.success('Done');
 
-    // Raw mode: show transcriptions only
-    const normalizedStyle = normalizeStyle(options.style || config.style) || 'musk';
+    const normalizedStyle = normalizeStyle(options.style) || 'bukowski';
 
     // Ejecutar agente IA
     let agentData = null;
@@ -223,7 +222,7 @@ async function main() {
         geminiClient,
         anthropicClient,
         results,
-        style: options.style || config.style,
+        style: normalizedStyle,
         styleFile: options.styleFile,
         styleText: options.styleText,
         mode: options.mode || config.mode,
@@ -255,7 +254,7 @@ async function main() {
     }
 
     // Save to history
-    await persistRun({ options, config, results, agentData, rawMode: false, agentProvider });
+    await persistRun({ options, config, results, agentData, rawMode: false, agentProvider, styleUsed: normalizedStyle });
 
     // Interactive chat mode
     if (agentProvider === 'gemini' && geminiClient && ui.isInteractive() && agentData?.finalResponse) {
@@ -674,13 +673,13 @@ async function readPlainText(filePath, inlineText = null) {
 // ============ AGENT ============
 
 async function runInsightAgent({ provider, geminiClient, anthropicClient, results, style, styleFile, styleText, mode, config }) {
-  const normalizedStyle = normalizeStyle(style) || 'musk';
+  const normalizedStyle = normalizeStyle(style) || 'bukowski';
   const promptPath = resolveAgentPromptPath(normalizedStyle);
   const promptSource = await fs.readFile(promptPath, 'utf8');
 
   const providerKey = provider === 'claude' ? 'claude' : 'gemini';
   const preset = '';
-  const customStyle = styleText || (styleFile ? await fs.readFile(path.resolve(styleFile), 'utf8') : '');
+  const customStyle = '';
   const defaultGeminiModel = 'gemini-3-pro-preview';
   const defaultClaudeModel = 'claude-opus-4.5';
   const configModel = (config.agentModel || '').toString();
@@ -828,7 +827,7 @@ function buildAgentPayload({ results, styleKey, preset, customStyle }) {
 // ============ CHAT ============
 
 async function startConversationLoop({ client, results, options, config, conversationHistory }) {
-  const normalizedStyle = normalizeStyle(options.style || config.style) || 'musk';
+  const normalizedStyle = normalizeStyle(options.style) || 'bukowski';
   const promptPath = resolveAgentPromptPath(normalizedStyle);
   const promptSource = await fs.readFile(promptPath, 'utf8');
   const preset = '';
@@ -1018,12 +1017,12 @@ async function handleShowCommand(id, options = {}) {
 
 // ============ PERSISTENCE ============
 
-async function persistRun({ options, config, results, agentData, rawMode, agentProvider }) {
+async function persistRun({ options, config, results, agentData, rawMode, agentProvider, styleUsed }) {
   try {
     const doc = {
       source: { url: options.url || null, path: options.inputPath || null },
       mode: options.mode || config.mode,
-      style: options.style || config.style,
+      style: styleUsed || 'bukowski',
       ocrModel: config.ocrModel,
       agentProvider: agentProvider || config.agentProvider,
       agentModel: config.agentModel,
@@ -1316,7 +1315,7 @@ function normalizeStyle(value) {
 }
 
 function resolveAgentPromptPath(style) {
-  const key = normalizeStyle(style) || 'musk';
+  const key = normalizeStyle(style) || 'bukowski';
   if (key === 'bukowski') return AGENT_PROMPT_BUKOWSKI_PATH;
   return AGENT_PROMPT_MUSK_PATH;
 }
@@ -1530,8 +1529,8 @@ function showUsage() {
     twx setmodel opus           Switch AI provider (gemini|opus|claude)
 
   STYLES
-    twx <url> musk              Voz Elon Musk (prompt base Musk)
-    twx <url> bukowski          Voz Charles Bukowski (prompt base Bukowski)
+    twx <url> bukowski          Voz Charles Bukowski (prompt base Bukowski, default)
+    twx <url> musk              Voz Elon Musk (alias: elon, m, mx)
 
   OPTIONS
     --clip 0:30-2:00            Video segment

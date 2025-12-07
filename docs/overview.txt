@@ -7,7 +7,7 @@ twx - Twitter/X Media Insight CLI
 - Guarda cada corrida en MongoDB para histórico y chat posterior (solo en modo Gemini).
 
 Uso típico
-- `twx <url>` o `twx <path>`; segundo argumento opcional es estilo (`musk` o `bukowski`).
+- `twx <url>` o `twx <path>`; estilo por defecto: `bukowski`. Para Musk usa alias `m`, `mx`, `max`, `elon`, `musk` (el estilo no se guarda en config, se elige en cada comando).
 - Segmentos de video: `--clip 0:30-2:00`.
 - Cambiar proveedor/modelo: `twx setmodel gemini` o `twx setmodel opus`.
 - Ver historial: `twx list`; mostrar una corrida: `twx show <id>`.
@@ -24,7 +24,7 @@ Archivos clave
 - `src/extract-text.js`: flujo principal (descarga, OCR/Whisper, agente IA, historial).
 - `src/config.js`: carga/guarda config y API keys.
 - `src/db.js`: persistencia MongoDB.
-- `prompts/agent_prompt_musk.txt`, `prompts/agent_prompt_bukowski.txt`: prompts base del agente (estructura XML, voz).
+- `prompts/agent_prompt_bukowski.txt` (default), `prompts/agent_prompt_musk.txt`: prompts base del agente (estructura XML, voz).
 
 Pipeline rápido
 1) Descargar contenido (yt-dlp para video/IG/YouTube; gallery-dl para otros).
