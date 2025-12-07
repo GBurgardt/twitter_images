@@ -227,7 +227,8 @@ async function main() {
         styleFile: options.styleFile,
         styleText: options.styleText,
         mode: options.mode || config.mode,
-        config
+        config,
+        directive: options.directive
       });
 
       if (agentResult) {
@@ -680,7 +681,7 @@ async function readPlainText(filePath, inlineText = null) {
 
 // ============ AGENT ============
 
-async function runInsightAgent({ provider, geminiClient, anthropicClient, results, style, styleFile, styleText, mode, config }) {
+async function runInsightAgent({ provider, geminiClient, anthropicClient, results, style, styleFile, styleText, mode, config, directive }) {
   const normalizedStyle = normalizeStyle(style) || 'bukowski';
   const promptPath = resolveAgentPromptPath(normalizedStyle);
   const promptSource = await fs.readFile(promptPath, 'utf8');
@@ -698,7 +699,13 @@ async function runInsightAgent({ provider, geminiClient, anthropicClient, result
   const spin = ui.spinner('Thinking...');
 
   try {
-    const payload = buildAgentPayload({ results, styleKey: normalizedStyle, preset, customStyle });
+    const payload = buildAgentPayload({
+      results,
+      styleKey: normalizedStyle,
+      preset,
+      customStyle,
+      directive
+    });
     ui.debug('Agent payload length:', payload.length);
 
     const safetySettings = [
@@ -803,12 +810,16 @@ async function runInsightAgent({ provider, geminiClient, anthropicClient, result
   }
 }
 
-function buildAgentPayload({ results, styleKey, preset, customStyle }) {
+function buildAgentPayload({ results, styleKey, preset, customStyle, directive }) {
   const blocks = [];
 
   blocks.push('Idioma obligatorio: español neutro, tono directo y pragmático.');
   blocks.push('Devuelve exclusivamente el bloque <response>…</response>.');
   blocks.push(`Style preset: ${styleKey || 'none'}`);
+
+  if (directive?.trim()) {
+    blocks.push(`Instrucción del usuario (obligatoria, prioritaria):\n${directive.trim()}`);
+  }
 
   if (preset) blocks.push(`Preset instructions:\n${preset}`);
   if (customStyle?.trim()) blocks.push(`User custom instructions:\n${customStyle.trim()}`);
@@ -861,7 +872,8 @@ async function startConversationLoop({ client, results, options, config, convers
         results,
         styleKey: normalizedStyle,
         preset,
-        customStyle: input
+        customStyle: input,
+        directive: options.directive
       });
 
       const userContent = { role: 'user', parts: [{ text: payload }] };
@@ -1457,6 +1469,7 @@ function parseArgs(argv) {
     modelCommand: false,
     modelValue: null,
     showId: null,
+    directive: null,
     clipStart: null,
     clipEnd: null,
     clipRange: null,
@@ -1568,7 +1581,18 @@ function parseArgs(argv) {
   }
 
   if (positional.length > 1 && !options.style) {
-    options.style = positional[1];
+    const maybeStyle = normalizeStyle(positional[1]);
+    if (maybeStyle) {
+      options.style = maybeStyle;
+    } else {
+      options.directive = positional[1];
+    }
+  } else if (positional.length > 1 && !options.directive) {
+    options.directive = positional[1];
+  }
+
+  if (positional.length > 2 && !options.directive) {
+    options.directive = positional[2];
   }
 
   return options;
@@ -1582,6 +1606,7 @@ function showUsage() {
 
   USAGE
     twx <url>                   Twitter, YouTube, any URL
+    twx <url> "<instrucción>"   Añade una directiva opcional que el modelo debe priorizar
     twx <path>                  Local files
     twx list                    History
     twx config                  Setup API keys
