@@ -1,18 +1,30 @@
 /**
- * UI Module - Experiencia visual estilo Apple
+ * UI Module - Experiencia visual estilo Papiro
  *
  * Principios:
  * - Silencio por default
- * - El contenido respira
+ * - El contenido respira (papiro sagrado)
+ * - Markdown renderizado elegantemente
  * - Errores en lenguaje humano
  * - Verbose solo cuando se pide
  */
 
 import * as clack from '@clack/prompts';
 import readline from 'node:readline/promises';
+import boxen from 'boxen';
+import { marked } from 'marked';
+import { markedTerminal } from 'marked-terminal';
 
-// Configuración visual
-const BORDER = '─'.repeat(55);
+// Configure marked for elegant terminal output
+marked.use(markedTerminal({
+  // Slightly warm color scheme for papyrus feel
+  reflowText: true,
+  width: 76
+}));
+
+// Papyrus aesthetic: warm ochre border like aged parchment
+const PAPYRUS_COLOR = '#C9A66B';
+
 const VERBOSE = { enabled: false };
 
 /**
@@ -47,31 +59,27 @@ export function spinner(message = 'Procesando...') {
 
 /**
  * Muestra el resultado principal (el insight del agente)
+ * Renderiza Markdown y lo presenta en una caja elegante estilo papiro
  */
 export function showResult(text, options = {}) {
+  if (!text?.trim()) return;
+
   const { title = null } = options;
 
-  console.log('');
-  console.log(`  ${BORDER}`);
-  console.log('');
+  // Render Markdown to terminal-formatted text
+  const rendered = marked.parse(text);
 
-  if (title) {
-    console.log(`  ${title}`);
-    console.log('');
-  }
+  // Create the papyrus box
+  const box = boxen(rendered.trim(), {
+    padding: 1,
+    margin: { top: 1, bottom: 1 },
+    borderStyle: 'round',
+    borderColor: PAPYRUS_COLOR,
+    title: title || undefined,
+    titleAlignment: 'center'
+  });
 
-  // Formatear el texto con indentación y wrapping
-  const lines = text.split('\n');
-  for (const line of lines) {
-    const wrapped = wrapText(line.trim(), 53);
-    for (const w of wrapped) {
-      console.log(`  ${w}`);
-    }
-  }
-
-  console.log('');
-  console.log(`  ${BORDER}`);
-  console.log('');
+  console.log(box);
 }
 
 /**
@@ -306,29 +314,6 @@ export function showContext(context) {
 }
 
 // ============ Utilidades ============
-
-/**
- * Wrap text a un ancho específico
- */
-function wrapText(text, width) {
-  if (!text) return [''];
-
-  const words = text.split(' ');
-  const lines = [];
-  let currentLine = '';
-
-  for (const word of words) {
-    if (currentLine.length + word.length + 1 <= width) {
-      currentLine += (currentLine ? ' ' : '') + word;
-    } else {
-      if (currentLine) lines.push(currentLine);
-      currentLine = word;
-    }
-  }
-
-  if (currentLine) lines.push(currentLine);
-  return lines.length ? lines : [''];
-}
 
 /**
  * Truncar texto
