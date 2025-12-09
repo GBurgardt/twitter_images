@@ -9,26 +9,7 @@
 
 import React from 'react';
 import { Box, Text } from 'ink';
-import { marked } from 'marked';
-import { markedTerminal } from 'marked-terminal';
-
-// Configure marked para terminal
-marked.use(markedTerminal({
-  reflowText: true,
-  width: 76
-}));
-
-/**
- * Renderiza Markdown a texto con formato terminal
- */
-function renderMarkdown(text) {
-  if (!text) return '';
-  try {
-    return marked.parse(text).trim();
-  } catch {
-    return text;
-  }
-}
+import Markdown from './Markdown.jsx';
 
 /**
  * Formatea fecha relativa
@@ -177,7 +158,7 @@ function InsightView({ insight }) {
         paddingX={2}
         paddingY={1}
       >
-        <Text>{renderMarkdown(content)}</Text>
+        <Markdown>{content || ''}</Markdown>
       </Box>
 
       {/* Conversaciones */}
@@ -192,7 +173,7 @@ function InsightView({ insight }) {
 
           {/* Respuesta */}
           <Box marginTop={1}>
-            <Text>{renderMarkdown(conv.answer)}</Text>
+            <Markdown>{conv.answer || ''}</Markdown>
           </Box>
         </Box>
       ))}
