@@ -216,35 +216,47 @@ export default function App() {
 
   // Render
   return (
-    <Box flexDirection="column" height="100%">
-      {/* Hint - efímero, arriba */}
-      {hint && !showHelp && (
-        <Box marginBottom={1}>
-          <Text dimColor>
-            {hint.type === 'url' && `[Enter] ${hint.text}`}
-            {hint.type === 'help' && hint.text}
-            {hint.type === 'copied' && hint.text}
-          </Text>
-        </Box>
-      )}
-
+    <Box flexDirection="column">
       {/* Help overlay */}
       {showHelp && <Help />}
 
       {/* Loading state */}
       {(analyzing || insightsLoading) && !showHelp && (
-        <Box justifyContent="center" marginY={2}>
-          <Text>
-            <Spinner type="dots" />
-          </Text>
+        <Box flexDirection="column" paddingY={2}>
+          <Box borderStyle="single" borderColor="gray" paddingX={2}>
+            <Text bold color="cyan">twx</Text>
+            <Text dimColor> · Cargando...</Text>
+          </Box>
+          <Box justifyContent="center" marginY={2}>
+            <Text color="cyan">
+              <Spinner type="dots" />
+            </Text>
+            <Text> {analyzing ? 'Analizando...' : 'Cargando biblioteca...'}</Text>
+          </Box>
         </Box>
       )}
 
       {/* Error state */}
       {analyzeError && !analyzing && !showHelp && (
-        <Box flexDirection="column" marginY={2}>
+        <Box flexDirection="column" marginY={2} paddingX={2}>
           <Text color="red">{analyzeError}</Text>
-          <Text dimColor>[r] reintentar</Text>
+          <Text dimColor>[r] reintentar  [Esc] volver</Text>
+        </Box>
+      )}
+
+      {/* URL hint - cuando hay URL en clipboard */}
+      {hint?.type === 'url' && !isExpanded && !analyzing && !showHelp && (
+        <Box marginBottom={1} paddingX={2}>
+          <Text color="green">[Enter]</Text>
+          <Text> Analizar: </Text>
+          <Text dimColor>{hint.text}</Text>
+        </Box>
+      )}
+
+      {/* Feedback de copiado */}
+      {hint?.type === 'copied' && (
+        <Box paddingX={2}>
+          <Text color="green">✓ {hint.text}</Text>
         </Box>
       )}
 
@@ -259,15 +271,18 @@ export default function App() {
         />
       )}
 
-      {/* Input - siempre visible */}
-      {!showHelp && (
-        <Input
-          value={inputValue}
-          onChange={setInputValue}
-          onSubmit={handleInputSubmit}
-          placeholder={searchMode ? '/' : ''}
-          disabled={analyzing}
-        />
+      {/* Input - solo cuando está expandido o en búsqueda */}
+      {!showHelp && (isExpanded || searchMode) && (
+        <Box paddingX={2} marginTop={1}>
+          <Text dimColor>{searchMode ? '/' : '›'} </Text>
+          <Input
+            value={inputValue}
+            onChange={setInputValue}
+            onSubmit={handleInputSubmit}
+            placeholder=""
+            disabled={analyzing}
+          />
+        </Box>
       )}
     </Box>
   );
