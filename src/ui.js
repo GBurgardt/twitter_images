@@ -141,7 +141,11 @@ export function showHistoryItem(run, options = {}) {
 }
 
 /**
- * Lista el historial de manera elegante
+ * Lista el historial con UX mejorada
+ * - Máximo 10 items visibles
+ * - Favoritos primero
+ * - Opción de búsqueda si hay más
+ * - Títulos limpios y bien truncados
  */
 export async function showHistoryList(runs, options = {}) {
   const { onSelect = null } = options;
@@ -153,24 +157,31 @@ export async function showHistoryList(runs, options = {}) {
     return null;
   }
 
+  // Sort: favorites first, then by updatedAt
+  const sorted = [...runs].sort((a, b) => {
+    if (a.isFavorite && !b.isFavorite) return -1;
+    if (!a.isFavorite && b.isFavorite) return 1;
+    const dateA = new Date(a.updatedAt || a.createdAt);
+    const dateB = new Date(b.updatedAt || b.createdAt);
+    return dateB - dateA;
+  });
+
+  const MAX_VISIBLE = 10;
+  const hasMore = sorted.length > MAX_VISIBLE;
+  const visible = sorted.slice(0, MAX_VISIBLE);
+
   console.log('');
 
-  const choices = runs.map((run) => {
-    // Use updatedAt for last activity, fallback to createdAt
-    const date = run.updatedAt || run.createdAt
-      ? formatRelativeDate(new Date(run.updatedAt || run.createdAt))
-      : '';
-    const title = run.title || 'Untitled';
-    const msgCount = (run.conversations || []).length;
-    const favorite = run.isFavorite ? '★ ' : '';
-    const chatIndicator = msgCount > 0 ? ` (${msgCount})` : '';
+  const choices = visible.map((run) => formatRunChoice(run));
 
-    return {
-      value: run._id.toString(),
-      label: `${favorite}${truncate(title, 40)}${chatIndicator}`,
-      hint: date
-    };
-  });
+  // Add search option if there are more items
+  if (hasMore) {
+    choices.push({
+      value: '__search__',
+      label: `🔍 Search (${sorted.length - MAX_VISIBLE} more)`,
+      hint: ''
+    });
+  }
 
   const selected = await clack.select({
     message: 'Library',
@@ -181,11 +192,169 @@ export async function showHistoryList(runs, options = {}) {
     return null;
   }
 
+  // Handle search
+  if (selected === '__search__') {
+    return await handleSearch(sorted, onSelect);
+  }
+
   if (onSelect) {
     await onSelect(selected);
   }
 
   return selected;
+}
+
+/**
+ * Format a run as a choice for the select menu
+ */
+function formatRunChoice(run) {
+  const date = run.updatedAt || run.createdAt
+    ? formatRelativeDate(new Date(run.updatedAt || run.createdAt))
+    : '';
+  const title = cleanTitle(run.title, run.finalResponse);
+  const msgCount = (run.conversations || []).length;
+  const favorite = run.isFavorite ? '★ ' : '  ';
+  const chatIndicator = msgCount > 0 ? ` (${msgCount})` : '';
+
+  return {
+    value: run._id.toString(),
+    label: `${favorite}${truncateAtWord(title, 45)}${chatIndicator}`,
+    hint: date
+  };
+}
+
+/**
+ * Clean title for display
+ */
+function cleanTitle(title, content) {
+  if (!title) {
+    // Fallback to first sentence of content
+    return extractFirstLine(content) || 'Untitled';
+  }
+
+  let clean = title;
+
+  // Remove markdown image syntax
+  clean = clean.replace(/!\[.*?\]\(.*?\)/g, '').trim();
+
+  // Remove standalone URLs
+  clean = clean.replace(/https?:\/\/[^\s]+/g, '').trim();
+
+  // Remove markdown headers
+  clean = clean.replace(/^#+\s*/, '').trim();
+
+  // Remove bullets and list markers
+  clean = clean.replace(/^[\*\-•]\s*/, '').trim();
+
+  // If empty after cleaning, use content
+  if (!clean || clean.length < 3) {
+    return extractFirstLine(content) || 'Untitled';
+  }
+
+  return clean;
+}
+
+/**
+ * Extract first meaningful line from content
+ */
+function extractFirstLine(content) {
+  if (!content) return null;
+  const lines = content.split('\n').map(l => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    // Skip XML-like lines
+    if (line.startsWith('<')) continue;
+    // Skip very short lines
+    if (line.length < 10) continue;
+    return line;
+  }
+  return lines[0] || null;
+}
+
+/**
+ * Truncate at word boundary
+ */
+function truncateAtWord(text, max) {
+  if (!text) return '';
+  if (text.length <= max) return text;
+
+  const truncated = text.slice(0, max);
+  const lastSpace = truncated.lastIndexOf(' ');
+
+  if (lastSpace > max * 0.6) {
+    return truncated.slice(0, lastSpace) + '...';
+  }
+  return truncated.slice(0, max - 3) + '...';
+}
+
+/**
+ * Search functionality
+ */
+async function handleSearch(runs, onSelect) {
+  const query = await clack.text({
+    message: 'Search:',
+    placeholder: 'type to filter by title or content...'
+  });
+
+  if (clack.isCancel(query) || !query?.trim()) {
+    // Return to main list
+    return await showHistoryList(runs, { onSelect });
+  }
+
+  const filtered = searchRuns(runs, query.trim());
+
+  if (filtered.length === 0) {
+    clack.log.warn(`No results for "${query}"`);
+    return await handleSearch(runs, onSelect);
+  }
+
+  console.log('');
+
+  const choices = filtered.slice(0, 15).map((run) => formatRunChoice(run));
+
+  // Add back option
+  choices.push({
+    value: '__back__',
+    label: '← Back to full list',
+    hint: ''
+  });
+
+  const selected = await clack.select({
+    message: `Results for "${truncate(query, 20)}"`,
+    options: choices
+  });
+
+  if (clack.isCancel(selected)) {
+    return null;
+  }
+
+  if (selected === '__back__') {
+    return await showHistoryList(runs, { onSelect });
+  }
+
+  if (onSelect) {
+    await onSelect(selected);
+  }
+
+  return selected;
+}
+
+/**
+ * Search runs by query (title + content + conversations)
+ */
+function searchRuns(runs, query) {
+  const q = query.toLowerCase();
+
+  return runs.filter(run => {
+    const title = (run.title || '').toLowerCase();
+    const content = (run.finalResponse || '').toLowerCase();
+    const conversations = (run.conversations || [])
+      .map(c => `${c.question || ''} ${c.answer || ''}`.toLowerCase())
+      .join(' ');
+
+    return title.includes(q) ||
+           content.includes(q) ||
+           conversations.includes(q);
+  });
 }
 
 /**
@@ -335,15 +504,15 @@ function formatRelativeDate(date) {
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
 
-  if (seconds < 60) return 'hace un momento';
-  if (minutes < 60) return `hace ${minutes} min`;
-  if (hours < 24) return `hace ${hours}h`;
-  if (days === 1) return 'ayer';
-  if (days < 7) return `hace ${days} días`;
+  if (seconds < 60) return 'now';
+  if (minutes < 60) return `${minutes}m`;
+  if (hours < 24) return `${hours}h`;
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days}d`;
 
-  // Fecha formateada
+  // Formatted date
   const day = date.getDate();
-  const month = date.toLocaleString('es', { month: 'short' });
+  const month = date.toLocaleString('en', { month: 'short' });
   return `${day} ${month}`;
 }
 

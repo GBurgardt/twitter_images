@@ -875,14 +875,13 @@ async function startConversationLoop({ client, results, options, config, convers
     : 'gemini-3-pro-preview';
 
   console.log('');
-  ui.clack.log.info('Chat mode. Type your question or "exit" to quit.');
+  ui.clack.log.info('Chat mode. Type question or empty to return.');
 
   while (true) {
     const input = await ui.chatPrompt();
 
-    if (!input || input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit') {
-      ui.clack.log.message('Goodbye.');
-      break;
+    if (!input || input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit' || input.toLowerCase() === 'back') {
+      break;  // Return to list silently
     }
 
     const spin = ui.spinner('Thinking...');
@@ -979,17 +978,34 @@ async function startConversationLoop({ client, results, options, config, convers
 
 // ============ HISTORY ============
 
+/**
+ * Library loop: list → chat → list → chat → ...
+ * Only exits on explicit quit (q) or Ctrl+C
+ */
 async function handleListCommand(options) {
   try {
-    const runs = await listRuns({ limit: options.listLimit || 10 });
+    // Load all runs once (search will filter these)
+    const runs = await listRuns({ limit: options.listLimit || 100 });
 
-    const selected = await ui.showHistoryList(runs, {
-      onSelect: async (id) => {
-        await handleShowCommand(id, options);
+    // Loop until user quits
+    while (true) {
+      const selected = await ui.showHistoryList(runs, {});
+
+      // User cancelled (Ctrl+C or q)
+      if (!selected) {
+        ui.clack.log.message('Goodbye.');
+        break;
       }
-    });
 
-    if (!selected) return;
+      // Open the selected insight with chat
+      await handleShowCommand(selected, options);
+
+      // After chat ends, loop back to list
+      // Refresh runs in case conversations were added
+      const refreshedRuns = await listRuns({ limit: options.listLimit || 100 });
+      runs.length = 0;
+      runs.push(...refreshedRuns);
+    }
 
   } catch (error) {
     errors.show(error, { verbose: options.verbose });
@@ -1851,19 +1867,20 @@ function showUsage() {
     twx setmodel opus           Switch AI provider (gemini|opus|claude)
 
   LIBRARY (twx without arguments)
-    ↑↓        Navigate ideas
-    Enter     Open idea & start chat
+    ↑↓        Navigate (max 10 shown, favorites first)
+    Enter     Open idea & chat
+    🔍        Search option appears if you have 10+ ideas
     Ctrl+C    Exit
 
   CHAT WITH AN IDEA
     1. Run: twx
-    2. Select idea with ↑↓, press Enter
-    3. View the original insight + previous conversations
-    4. Type your question, press Enter (empty line sends)
-    5. AI responds with full context - same prompt, same style
-    6. Everything is saved automatically
+    2. Select idea (★ favorites at top)
+    3. View insight + previous conversations
+    4. Type question, Enter to send (empty = return to list)
+    5. AI responds with full context
+    6. Saved automatically. Return to list when done.
 
-    The (3) next to a title = 3 messages in that conversation
+    (3) = 3 messages in conversation
     ★ = favorite
 
   TRANSCRIPT
