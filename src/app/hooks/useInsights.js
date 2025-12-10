@@ -3,19 +3,22 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { listRuns, getRunById } from '../../db.js';
+import { listRuns, getRunById, toggleFavorite as dbToggleFavorite, listFavorites } from '../../db.js';
 import mongoose from 'mongoose';
 
 export function useInsights() {
   const [insights, setInsights] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
 
   // Cargar insights
   const refresh = useCallback(async () => {
     try {
       setLoading(true);
-      const runs = await listRuns({ limit: 50 });
+      const runs = showFavoritesOnly
+        ? await listFavorites({ limit: 50 })
+        : await listRuns({ limit: 50 });
       setInsights(runs);
       setError(null);
     } catch (err) {
@@ -23,6 +26,11 @@ export function useInsights() {
     } finally {
       setLoading(false);
     }
+  }, [showFavoritesOnly]);
+
+  // Toggle filtro de favoritos
+  const toggleFavoritesFilter = useCallback(() => {
+    setShowFavoritesOnly(prev => !prev);
   }, []);
 
   // Cargar al montar
@@ -71,12 +79,30 @@ export function useInsights() {
     }
   }, [refresh]);
 
+  // Toggle favorito de un insight
+  const toggleFavorite = useCallback(async (insightId, note = null) => {
+    try {
+      const result = await dbToggleFavorite(insightId, note);
+      if (result) {
+        await refresh();
+        return result.isFavorite;
+      }
+      return null;
+    } catch (err) {
+      setError(err.message);
+      return null;
+    }
+  }, [refresh]);
+
   return {
     insights,
     loading,
     error,
     refresh,
     addConversation,
-    deleteInsight
+    deleteInsight,
+    toggleFavorite,
+    showFavoritesOnly,
+    toggleFavoritesFilter
   };
 }

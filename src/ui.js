@@ -148,32 +148,32 @@ export async function showHistoryList(runs, options = {}) {
 
   if (!runs.length) {
     console.log('');
-    clack.log.info('No hay historial todavía.');
-    clack.log.message('Usá "twx <url>" para analizar contenido.');
+    clack.log.info('No history yet.');
+    clack.log.message('Use "twx <url>" to analyze content.');
     return null;
   }
 
   console.log('');
 
   const choices = runs.map((run) => {
-    const date = run.createdAt
-      ? formatRelativeDate(new Date(run.createdAt))
+    // Use updatedAt for last activity, fallback to createdAt
+    const date = run.updatedAt || run.createdAt
+      ? formatRelativeDate(new Date(run.updatedAt || run.createdAt))
       : '';
-    const title = run.title || 'Sin título';
-    const preview = stripXmlTags(run.finalResponse || '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 60);
+    const title = run.title || 'Untitled';
+    const msgCount = (run.conversations || []).length;
+    const favorite = run.isFavorite ? '★ ' : '';
+    const chatIndicator = msgCount > 0 ? ` (${msgCount})` : '';
 
     return {
       value: run._id.toString(),
-      label: truncate(title, 45),
+      label: `${favorite}${truncate(title, 40)}${chatIndicator}`,
       hint: date
     };
   });
 
   const selected = await clack.select({
-    message: 'Historial reciente',
+    message: 'Library',
     options: choices
   });
 

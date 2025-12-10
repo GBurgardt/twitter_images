@@ -74,22 +74,22 @@ export async function askFollowUp(insight, question) {
   const geminiClient = config.geminiApiKey ? new GoogleGenAI({ apiKey: config.geminiApiKey }) : null;
   const anthropicClient = config.anthropicApiKey ? new Anthropic({ apiKey: config.anthropicApiKey }) : null;
 
-  // Construir contexto
+  // Build context
   const context = `
-Contenido original del análisis:
+Original analysis content:
 ${insight.finalResponse || ''}
 
-Conversaciones previas:
-${(insight.conversations || []).map(c => `Usuario: ${c.question}\nRespuesta: ${c.answer}`).join('\n\n')}
+Previous conversations:
+${(insight.conversations || []).map(c => `User: ${c.question}\nResponse: ${c.answer}`).join('\n\n')}
 `;
 
   const prompt = `
 ${context}
 
-Nueva pregunta del usuario:
+New user question:
 ${question}
 
-Responde de manera concisa y directa en español.
+Respond concisely and directly in English.
 `;
 
   if (agentProvider === 'claude' && anthropicClient) {

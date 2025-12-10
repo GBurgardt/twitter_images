@@ -17,6 +17,15 @@ const resultSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const conversationSchema = new mongoose.Schema(
+  {
+    question: String,
+    answer: String,
+    createdAt: { type: Date, default: Date.now }
+  },
+  { _id: false }
+);
+
 const runSchema = new mongoose.Schema(
   {
     source: {
@@ -38,7 +47,13 @@ const runSchema = new mongoose.Schema(
     finalResponse: String,
     xml: String,
     results: [resultSchema],
-    metadata: mongoose.Schema.Types.Mixed
+    metadata: mongoose.Schema.Types.Mixed,
+    // Favoritos
+    isFavorite: { type: Boolean, default: false },
+    favoriteNote: String,
+    favoritedAt: Date,
+    // Conversaciones de follow-up
+    conversations: [conversationSchema]
   },
   {
     timestamps: { createdAt: 'createdAt', updatedAt: 'updatedAt' },
@@ -75,7 +90,7 @@ export async function saveRun(payload) {
 export async function listRuns({ limit = 10 } = {}) {
   await connectToDatabase();
   const runs = await RunModel.find({})
-    .sort({ createdAt: -1 })
+    .sort({ updatedAt: -1 })
     .limit(Math.max(1, Math.min(limit, 100)))
     .lean()
     .exec();
@@ -97,4 +112,59 @@ export function buildAutoTitle({ results = [], fallback }) {
   const raw = pick?.text || fallback || '';
   const title = raw.split('\n').find((line) => line.trim()) || raw.slice(0, 140);
   return (title || 'Sin título').trim().slice(0, 140);
+}
+
+// ============ FAVORITOS ============
+
+/**
+ * Toggle favorito de un insight
+ * @param {string} id - ID del insight
+ * @param {string} note - Nota opcional
+ * @returns {object} - { isFavorite: boolean }
+ */
+export async function toggleFavorite(id, note = null) {
+  await connectToDatabase();
+  const run = await RunModel.findById(id);
+  if (!run) return null;
+
+  const wasF = run.isFavorite;
+  run.isFavorite = !wasF;
+
+  if (run.isFavorite) {
+    run.favoritedAt = new Date();
+    if (note) run.favoriteNote = note;
+  } else {
+    run.favoritedAt = null;
+    run.favoriteNote = null;
+  }
+
+  await run.save();
+  return { isFavorite: run.isFavorite };
+}
+
+/**
+ * Obtener solo favoritos
+ */
+export async function listFavorites({ limit = 50 } = {}) {
+  await connectToDatabase();
+  const runs = await RunModel.find({ isFavorite: true })
+    .sort({ updatedAt: -1 })
+    .limit(Math.max(1, Math.min(limit, 100)))
+    .lean()
+    .exec();
+  return runs;
+}
+
+/**
+ * Agregar una conversación a un insight
+ */
+export async function addConversation(id, question, answer) {
+  await connectToDatabase();
+  const run = await RunModel.findById(id);
+  if (!run) return null;
+
+  if (!run.conversations) run.conversations = [];
+  run.conversations.push({ question, answer, createdAt: new Date() });
+  await run.save();
+  return run.toObject();
 }

@@ -2,7 +2,7 @@
 /**
  * twx - CLI wrapper
  *
- * Sin argumentos: abre interfaz interactiva
+ * Sin argumentos: abre biblioteca con chat interactivo
  * Con URL u otros argumentos: modo script (ejecuta y sale)
  */
 
@@ -13,25 +13,17 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT_PATH = path.join(__dirname, '../src/extract-text.js');
-const APP_PATH = path.join(__dirname, '../src/app/index.jsx');
 
 function main() {
   const args = process.argv.slice(2);
 
-  // Detectar si debe abrir modo interactivo
-  const hasUrl = args.some(arg => arg.startsWith('http://') || arg.startsWith('https://'));
-  const hasPath = args.some(arg => !arg.startsWith('-') && !arg.startsWith('http'));
-  const hasListCommand = args.includes('list') || args.includes('--list') || args.includes('-l');
-  const hasConfigCommand = args.includes('config') || args.includes('--config');
-  const hasHelp = args.includes('--help') || args.includes('-h');
+  // Si no hay argumentos Y es TTY, abrir biblioteca (list command)
+  const shouldLibrary = args.length === 0 ||
+                        (args.length === 1 && (args[0] === '-i' || args[0] === '--interactive'));
 
-  // Si no hay argumentos significativos Y es TTY, abrir modo interactivo
-  const shouldInteractive = args.length === 0 ||
-                            (args.length === 1 && (args[0] === '-i' || args[0] === '--interactive'));
-
-  if (shouldInteractive && process.stdin.isTTY) {
-    // Modo interactivo - usar node con tsx/esm loader para JSX
-    const child = spawn(process.execPath, ['--import', 'tsx/esm', APP_PATH], {
+  if (shouldLibrary && process.stdin.isTTY) {
+    // Abrir biblioteca - usa el mismo sistema de chat que twx <url>
+    const child = spawn(process.execPath, [SCRIPT_PATH, 'list', '--limit', '50'], {
       stdio: 'inherit',
       env: process.env
     });

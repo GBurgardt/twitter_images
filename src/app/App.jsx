@@ -1,10 +1,10 @@
 /**
- * App.jsx - El corazón de twx
+ * App.jsx - The heart of twx
  *
- * La interfaz ha desaparecido. Solo queda:
- * - Contenido (lista o insight)
+ * The interface has disappeared. Only remains:
+ * - Content (list or insight)
  * - Input (cursor)
- * - Hints efímeros
+ * - Ephemeral hints
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -31,7 +31,16 @@ export default function App() {
   const [firstRun, setFirstRun] = useState(true);
 
   // Hooks
-  const { insights, loading: insightsLoading, refresh, addConversation, deleteInsight } = useInsights();
+  const {
+    insights,
+    loading: insightsLoading,
+    refresh,
+    addConversation,
+    deleteInsight,
+    toggleFavorite,
+    showFavoritesOnly,
+    toggleFavoritesFilter
+  } = useInsights();
   const { analyze, loading: analyzing, error: analyzeError } = useAnalyze();
   const { clipboardUrl, checkClipboard } = useClipboard();
 
@@ -71,7 +80,7 @@ export default function App() {
   useEffect(() => {
     if (firstRun && insights.length > 0) {
       setTimeout(() => {
-        setHint({ type: 'help', text: '? para ayuda' });
+        setHint({ type: 'help', text: '? for help' });
         setTimeout(() => {
           setHint(h => h?.type === 'help' ? null : h);
           setFirstRun(false);
@@ -108,6 +117,19 @@ export default function App() {
     setExpandedId(null);
     await refresh();
   }, [currentInsight, deleteInsight, refresh]);
+
+  // Handle toggle favorite
+  const handleToggleFavorite = useCallback(async (insightId = null) => {
+    const id = insightId || currentInsight?._id;
+    if (!id) return;
+
+    const isFav = await toggleFavorite(id);
+    if (isFav !== null) {
+      const msg = isFav ? '★ Favorite' : '☆ Removed from favorites';
+      setHint({ type: 'favorite', text: msg });
+      setTimeout(() => setHint(h => h?.type === 'favorite' ? null : h), 1500);
+    }
+  }, [currentInsight, toggleFavorite]);
 
   // Keyboard handling
   useInput((input, key) => {
@@ -191,9 +213,22 @@ export default function App() {
       if (currentInsight?.source?.url) {
         import('clipboardy').then(({ default: clipboard }) => {
           clipboard.writeSync(currentInsight.source.url);
-          setHint({ type: 'copied', text: 'Copiado' });
+          setHint({ type: 'copied', text: 'Copied' });
           setTimeout(() => setHint(h => h?.type === 'copied' ? null : h), 1500);
         });
+      }
+      return;
+    }
+
+    // Toggle favorite (F key)
+    if ((input === 'f' || input === 'F') && !searchMode && !inputValue) {
+      if (isExpanded) {
+        // Toggle favorito del insight actual
+        handleToggleFavorite();
+      } else {
+        // Toggle filtro de favoritos en la lista
+        toggleFavoritesFilter();
+        setSelectedIndex(0); // Reset selection
       }
       return;
     }
@@ -225,13 +260,13 @@ export default function App() {
         <Box flexDirection="column" paddingY={2}>
           <Box borderStyle="single" borderColor="gray" paddingX={2}>
             <Text bold color="cyan">twx</Text>
-            <Text dimColor> · Cargando...</Text>
+            <Text dimColor> · Loading...</Text>
           </Box>
           <Box justifyContent="center" marginY={2}>
             <Text color="cyan">
               <Spinner type="dots" />
             </Text>
-            <Text> {analyzing ? 'Analizando...' : 'Cargando biblioteca...'}</Text>
+            <Text> {analyzing ? 'Analyzing...' : 'Loading library...'}</Text>
           </Box>
         </Box>
       )}
@@ -240,23 +275,30 @@ export default function App() {
       {analyzeError && !analyzing && !showHelp && (
         <Box flexDirection="column" marginY={2} paddingX={2}>
           <Text color="red">{analyzeError}</Text>
-          <Text dimColor>[r] reintentar  [Esc] volver</Text>
+          <Text dimColor>[r] retry  [Esc] back</Text>
         </Box>
       )}
 
-      {/* URL hint - cuando hay URL en clipboard */}
+      {/* URL hint - when there's a URL in clipboard */}
       {hint?.type === 'url' && !isExpanded && !analyzing && !showHelp && (
         <Box marginBottom={1} paddingX={2}>
           <Text color="green">[Enter]</Text>
-          <Text> Analizar: </Text>
+          <Text> Analyze: </Text>
           <Text dimColor>{hint.text}</Text>
         </Box>
       )}
 
-      {/* Feedback de copiado */}
+      {/* Copied feedback */}
       {hint?.type === 'copied' && (
         <Box paddingX={2}>
           <Text color="green">✓ {hint.text}</Text>
+        </Box>
+      )}
+
+      {/* Favorite feedback */}
+      {hint?.type === 'favorite' && (
+        <Box paddingX={2}>
+          <Text color="yellow">{hint.text}</Text>
         </Box>
       )}
 
@@ -268,6 +310,7 @@ export default function App() {
           expandedInsight={currentInsight}
           searchMode={searchMode}
           searchQuery={searchMode ? inputValue : ''}
+          showFavoritesOnly={showFavoritesOnly}
         />
       )}
 

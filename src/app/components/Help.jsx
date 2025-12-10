@@ -1,21 +1,22 @@
 /**
- * Help.jsx - Ayuda on-demand
+ * Help.jsx - On-demand help
  *
- * Aparece con "?". Desaparece con cualquier tecla.
- * Mínima. Clara. Desaparece.
+ * Appears with "?". Disappears with any key.
+ * Minimal. Clear. Disappears.
  */
 
 import React from 'react';
 import { Box, Text } from 'ink';
 
 const shortcuts = [
-  { key: '↑↓', desc: 'navegar' },
-  { key: 'Enter', desc: 'abrir / enviar' },
-  { key: 'Esc', desc: 'volver' },
-  { key: '/', desc: 'buscar' },
-  { key: 'd', desc: 'borrar' },
-  { key: 'c', desc: 'copiar url' },
-  { key: 'q', desc: 'salir' },
+  { key: '↑↓', desc: 'navigate' },
+  { key: 'Enter', desc: 'open / send' },
+  { key: 'Esc', desc: 'back' },
+  { key: '/', desc: 'search' },
+  { key: 'F', desc: '★ favorite / filter' },
+  { key: 'd', desc: 'delete' },
+  { key: 'c', desc: 'copy url' },
+  { key: 'q', desc: 'quit' },
 ];
 
 export default function Help() {
@@ -28,7 +29,7 @@ export default function Help() {
         </Box>
       ))}
       <Box marginTop={1}>
-        <Text dimColor italic>cualquier tecla para cerrar</Text>
+        <Text dimColor italic>any key to close</Text>
       </Box>
     </Box>
   );

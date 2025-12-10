@@ -126,6 +126,12 @@ async function main() {
     return;
   }
 
+  // Comando: transcript (solo transcripción cruda, sin análisis)
+  if (options.transcriptOnly) {
+    await handleTranscriptCommand(options);
+    return;
+  }
+
   // Validar input
   if (!options.inputPath && !options.url) {
     showUsage();
@@ -424,9 +430,12 @@ async function downloadWithYtDlp(url, downloadRoot) {
   ui.debug('Downloading with yt-dlp:', url);
 
   try {
+    // Descargar y extraer audio en formato mp3 para compatibilidad con Whisper
     await runExternalCommand('yt-dlp', [
       '-q', '-P', runDir, '-o', '%(title)s.%(ext)s',
-      '-f', 'bestaudio/best', '--no-progress', '--write-info-json', url
+      '-f', 'bestaudio/best',
+      '-x', '--audio-format', 'mp3',
+      '--no-progress', '--write-info-json', url
     ]);
   } catch (error) {
     throw new errors.HumanError('Could not download that video.', {
@@ -856,7 +865,7 @@ function buildAgentPayload({ results, styleKey, preset, customStyle, directive }
 
 // ============ CHAT ============
 
-async function startConversationLoop({ client, results, options, config, conversationHistory }) {
+async function startConversationLoop({ client, results, options, config, conversationHistory, runId = null }) {
   const normalizedStyle = normalizeStyle(options.style) || 'bukowski';
   const promptPath = resolveAgentPromptPath(normalizedStyle);
   const promptSource = await fs.readFile(promptPath, 'utf8');
@@ -936,6 +945,17 @@ async function startConversationLoop({ client, results, options, config, convers
         const assistantContent = response?.candidates?.[0]?.content;
         if (assistantContent) {
           conversationHistory.push(userContent, assistantContent);
+        }
+
+        // Save conversation to DB if we have a runId
+        if (runId) {
+          try {
+            const { addConversation } = await import('./db.js');
+            await addConversation(runId, input, stripXmlTags(finalResponse));
+            ui.debug('Conversation saved to DB');
+          } catch (saveErr) {
+            ui.debug('Failed to save conversation:', saveErr.message);
+          }
         }
       } else {
         ui.debug('Chat no response to show');
@@ -1021,6 +1041,19 @@ async function handleShowCommand(id, options = {}) {
 
     ui.showHistoryItem(run, { showTranscript: options.showTranscript });
 
+    // Show previous conversations if any
+    const dbConversations = run.conversations || [];
+    if (dbConversations.length > 0) {
+      console.log('');
+      ui.clack.log.info(`${dbConversations.length} previous message${dbConversations.length > 1 ? 's' : ''}`);
+      for (const conv of dbConversations) {
+        console.log('');
+        console.log(`  \x1b[2mYou: ${conv.question}\x1b[0m`);
+        console.log('');
+        ui.showResult(stripXmlTags(conv.answer || ''));
+      }
+    }
+
     // Chat mode si está disponible
     const config = await loadConfig();
     const provider = (run.agentProvider || config.agentProvider || 'gemini').toLowerCase();
@@ -1028,20 +1061,145 @@ async function handleShowCommand(id, options = {}) {
 
     if (canChat) {
       const geminiClient = new GoogleGenAI({ apiKey: config.geminiApiKey });
-      const conversationHistory = run.finalResponse
-        ? [{ role: 'assistant', parts: [{ text: run.finalResponse }] }]
-        : [];
+
+      // Build conversation history from DB conversations
+      const conversationHistory = [];
+
+      // Add original response
+      if (run.finalResponse) {
+        conversationHistory.push({ role: 'model', parts: [{ text: run.finalResponse }] });
+      }
+
+      // Add previous conversations from DB
+      for (const conv of dbConversations) {
+        conversationHistory.push({ role: 'user', parts: [{ text: conv.question }] });
+        if (conv.answer) {
+          conversationHistory.push({ role: 'model', parts: [{ text: conv.answer }] });
+        }
+      }
 
       await startConversationLoop({
         client: geminiClient,
         results: run.results || [],
         options: { style: run.style, mode: run.mode },
         config,
-        conversationHistory
+        conversationHistory,
+        runId: run._id  // Pass runId to save conversations
       });
     }
 
   } catch (error) {
+    errors.show(error, { verbose: options.verbose });
+  }
+}
+
+// ============ TRANSCRIPT ============
+
+/**
+ * Comando transcript: descarga audio de YouTube con yt-dlp y transcribe con Whisper API
+ * Devuelve el transcript CRUDO sin análisis de IA
+ *
+ * Uso: twx <youtube-url> transcript
+ */
+async function handleTranscriptCommand(options) {
+  const url = options.url;
+
+  if (!url) {
+    errors.show(new errors.HumanError('URL requerida para transcript.', {
+      tip: 'Uso: twx <youtube-url> transcript'
+    }));
+    return;
+  }
+
+  // Verificar que sea una URL de YouTube
+  let hostname;
+  try {
+    hostname = new URL(url).hostname.toLowerCase();
+  } catch {
+    errors.show(new errors.HumanError('URL inválida.', {
+      tip: 'Asegúrate de copiar la URL completa.'
+    }));
+    return;
+  }
+
+  if (!YTDLP_HOSTS.has(hostname)) {
+    errors.show(new errors.HumanError('Solo URLs de YouTube/Instagram soportadas para transcript.', {
+      tip: `Host detectado: ${hostname}. Usa una URL de youtube.com o youtu.be`
+    }));
+    return;
+  }
+
+  // Cargar config
+  const config = await loadConfig();
+
+  if (!config.openaiApiKey) {
+    errors.show(new errors.HumanError('OpenAI API key requerida para transcripción.', {
+      tip: 'Ejecuta "twx config" para agregar tu clave de OpenAI.'
+    }));
+    return;
+  }
+
+  const openaiClient = new OpenAI({ apiKey: config.openaiApiKey });
+  const downloadRoot = config.downloadRoot || path.join(os.tmpdir(), 'twx-transcript');
+
+  const spin = ui.spinner('Downloading audio...');
+
+  try {
+    // Paso 1: Descargar audio con yt-dlp
+    ui.debug('Transcript: downloading audio from', url);
+    await fs.mkdir(downloadRoot, { recursive: true });
+    const runDir = await fs.mkdtemp(path.join(downloadRoot, 'yt-'));
+
+    await runExternalCommand('yt-dlp', [
+      '-q', '-P', runDir, '-o', '%(title)s.%(ext)s',
+      '-f', 'bestaudio/best',
+      '-x', '--audio-format', 'mp3',
+      '--no-progress', url
+    ]);
+
+    // Buscar el archivo de audio descargado
+    const files = await fs.readdir(runDir);
+    const audioFile = files.find(f =>
+      f.endsWith('.mp3') || f.endsWith('.m4a') || f.endsWith('.opus') ||
+      f.endsWith('.webm') || f.endsWith('.wav')
+    );
+
+    if (!audioFile) {
+      throw new errors.HumanError('No se pudo descargar el audio.', {
+        tip: 'Verifica que la URL sea válida y el video sea público.'
+      });
+    }
+
+    const audioPath = path.join(runDir, audioFile);
+    const stats = await fs.stat(audioPath);
+    ui.debug('Audio downloaded:', audioPath, 'size:', stats.size);
+
+    spin.update('Transcribing with Whisper...');
+
+    // Paso 2: Transcribir con Whisper API
+    const transcript = await transcribeMedia({
+      openaiClient,
+      filePath: audioPath,
+      clipRange: options.clipRange,
+      config
+    });
+
+    spin.success('Done');
+
+    // Paso 3: Mostrar transcript crudo
+    console.log('\n' + '─'.repeat(60));
+    console.log(transcript);
+    console.log('─'.repeat(60) + '\n');
+
+    // Cleanup
+    if (!config.keepDownloads) {
+      await fs.rm(runDir, { recursive: true, force: true }).catch(() => {});
+    }
+
+    ui.debug('Transcript complete, chars:', transcript.length);
+
+  } catch (error) {
+    spin.error('Error');
     errors.show(error, { verbose: options.verbose });
   }
 }
@@ -1545,13 +1703,20 @@ function parseArgs(argv) {
     showTranscript: false,
     configCommand: false,
     configReset: false,
-    configShow: false
+    configShow: false,
+    transcriptOnly: false
   };
 
   const positional = [];
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
+
+    // Transcript command (debe ir antes de otros checks)
+    if (arg === 'transcript' || arg === 'transcribe' || arg === 'trans') {
+      options.transcriptOnly = true;
+      continue;
+    }
 
     // Config command
     if (arg === 'config') {
@@ -1672,27 +1837,54 @@ function showUsage() {
   console.log(`
   twx
 
-  Paste a URL. Get the insight.
+  Paste a URL. Get the insight. Chat with your ideas.
 
   USAGE
-    twx <url>                   Twitter, YouTube, any URL
-    twx <url> "<instrucción>"   Añade una directiva opcional que el modelo debe priorizar
-    twx <url> --thread          Si es un tweet, extrae el hilo completo vía API
-    twx <path>                  Local files
-    twx list                    History
+    twx                         Open library (browse & chat with saved ideas)
+    twx <url>                   Analyze: Twitter, YouTube, any URL
+    twx <url> "<directive>"     Add optional directive for the model
+    twx <url> --thread          Extract full Twitter thread via API
+    twx <url> transcript        Get raw transcript (yt-dlp + Whisper)
+    twx <path>                  Analyze local files
+    twx list                    Show history
     twx config                  Setup API keys
     twx setmodel opus           Switch AI provider (gemini|opus|claude)
 
+  LIBRARY (twx without arguments)
+    ↑↓        Navigate ideas
+    Enter     Open idea & start chat
+    Ctrl+C    Exit
+
+  CHAT WITH AN IDEA
+    1. Run: twx
+    2. Select idea with ↑↓, press Enter
+    3. View the original insight + previous conversations
+    4. Type your question, press Enter (empty line sends)
+    5. AI responds with full context - same prompt, same style
+    6. Everything is saved automatically
+
+    The (3) next to a title = 3 messages in that conversation
+    ★ = favorite
+
+  TRANSCRIPT
+    twx <youtube-url> transcript                    Download + Whisper transcription
+    twx <youtube-url> transcript --clip 0:30-2:00   Only a segment
+
   STYLES
-    twx <url> bukowski          Voz Charles Bukowski (prompt base Bukowski, default)
-    twx <url> musk              Voz Elon Musk (alias: elon, m, mx)
+    twx <url> bukowski          Charles Bukowski voice (default)
+    twx <url> musk              Elon Musk voice (alias: elon, m, mx)
 
   OPTIONS
     --clip 0:30-2:00            Video segment
+    --thread                    Extract full Twitter thread
     --verbose                   Show technical details
 
   EXAMPLES
-    twx https://x.com/user/status/123456
+    twx                                             # Open library, chat with ideas
+    twx https://x.com/user/status/123456            # Analyze tweet
+    twx https://x.com/user/status/123456 --thread   # Analyze full thread
+    twx https://youtube.com/watch?v=abc             # Analyze YouTube video
+    twx https://youtube.com/watch?v=abc transcript  # Just transcribe
     twx https://youtube.com/watch?v=abc --clip 1:00-5:00
     twx ./screenshots/ bukowski
 
