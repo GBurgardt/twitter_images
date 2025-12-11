@@ -7,9 +7,10 @@
  * - Qué está seleccionado
  */
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
 import Markdown from './Markdown.jsx';
+import StreamingText from './StreamingText.jsx';
 
 /**
  * Format relative date - EN ESPAÑOL
@@ -149,9 +150,25 @@ function InsightList({ insights, selectedIndex, showFavoritesOnly, searchQuery }
 }
 
 /**
- * Expanded view of an insight
+ * Cursor parpadeante para streaming
  */
-function InsightView({ insight }) {
+function BlinkingCursor({ color = 'cyan' }) {
+  const [visible, setVisible] = useState(true);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setVisible(v => !v);
+    }, 530);
+    return () => clearInterval(interval);
+  }, []);
+
+  return <Text color={color}>{visible ? '▍' : ' '}</Text>;
+}
+
+/**
+ * Expanded view of an insight - AHORA CON SOPORTE PARA STREAMING
+ */
+function InsightView({ insight, streamingText, isStreaming, isWaiting, streamError }) {
   if (!insight) return null;
 
   const title = getDisplayTitle(insight);
@@ -177,7 +194,7 @@ function InsightView({ insight }) {
         <Markdown>{content || ''}</Markdown>
       </Box>
 
-      {/* Conversations */}
+      {/* Conversations guardadas */}
       {conversations.map((conv, index) => (
         <Box key={index} flexDirection="column" marginTop={1} paddingX={1}>
           <Text dimColor>{'─'.repeat(50)}</Text>
@@ -193,6 +210,37 @@ function InsightView({ insight }) {
           </Box>
         </Box>
       ))}
+
+      {/* === STREAMING DE NUEVA RESPUESTA === */}
+      {(isWaiting || isStreaming || streamingText) && (
+        <Box flexDirection="column" marginTop={1} paddingX={1}>
+          <Text dimColor>{'─'.repeat(50)}</Text>
+
+          {/* Estado: Esperando (antes de <final_response>) */}
+          {isWaiting && !streamingText && (
+            <Box marginTop={1}>
+              <BlinkingCursor />
+            </Box>
+          )}
+
+          {/* Estado: Streameando o completado */}
+          {streamingText && (
+            <Box marginTop={1} flexDirection="column">
+              <Box>
+                <Markdown>{streamingText}</Markdown>
+                {isStreaming && <BlinkingCursor />}
+              </Box>
+            </Box>
+          )}
+
+          {/* Error durante streaming */}
+          {streamError && !streamingText && (
+            <Box marginTop={1}>
+              <Text color="red">{streamError}</Text>
+            </Box>
+          )}
+        </Box>
+      )}
     </Box>
   );
 }
@@ -206,11 +254,24 @@ export default function Content({
   selectedIndex,
   expandedInsight,
   searchQuery,
-  showFavoritesOnly
+  showFavoritesOnly,
+  // Props de streaming
+  streamingText,
+  isStreaming,
+  isWaiting,
+  streamError
 }) {
   // Vista expandida de un insight
   if (expandedInsight) {
-    return <InsightView insight={expandedInsight} />;
+    return (
+      <InsightView
+        insight={expandedInsight}
+        streamingText={streamingText}
+        isStreaming={isStreaming}
+        isWaiting={isWaiting}
+        streamError={streamError}
+      />
+    );
   }
 
   // Lista de insights

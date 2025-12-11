@@ -9,15 +9,16 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
-import Spinner from 'ink-spinner';
 import Fuse from 'fuse.js';
 
 import { useInsights } from './hooks/useInsights.js';
 import { useAnalyze } from './hooks/useAnalyze.js';
 import { useClipboard } from './hooks/useClipboard.js';
+import { useStreamingChat } from './hooks/useStreamingChat.js';
 import Content from './components/Content.jsx';
 import Input from './components/Input.jsx';
 import Help from './components/Help.jsx';
+import StreamingText, { WaitingIndicator } from './components/StreamingText.jsx';
 
 // Configuración de Fuse para búsqueda fuzzy
 const FUSE_OPTIONS = {
@@ -87,6 +88,14 @@ export default function App() {
   } = useInsights();
   const { analyze, loading: analyzing, error: analyzeError } = useAnalyze();
   const { clipboardUrl, checkClipboard } = useClipboard();
+  const {
+    streamingText,
+    isStreaming,
+    isWaiting,
+    error: streamError,
+    sendQuestion,
+    reset: resetStreaming
+  } = useStreamingChat();
 
   // Derived state
   const isExpanded = expandedId !== null;
@@ -164,14 +173,19 @@ export default function App() {
     }
   }, [analyze, refresh]);
 
-  // Handle sending a question
+  // Handle sending a question - AHORA CON STREAMING
   const handleSendQuestion = useCallback(async (question) => {
     if (!currentInsight || !question.trim()) return;
+    if (isStreaming || isWaiting) return; // No enviar si ya está streameando
 
     setInputValue('');
-    await addConversation(currentInsight._id, question);
-    await refresh();
-  }, [currentInsight, addConversation, refresh]);
+
+    // Usar streaming para la respuesta
+    await sendQuestion(currentInsight, question, async () => {
+      // Cuando termine el streaming, refrescar para obtener la conversación guardada
+      await refresh();
+    });
+  }, [currentInsight, sendQuestion, refresh, isStreaming, isWaiting]);
 
   // Handle delete
   const handleDelete = useCallback(async () => {
@@ -220,6 +234,7 @@ export default function App() {
         setInputValue('');
       } else if (isExpanded) {
         setExpandedId(null);
+        resetStreaming(); // Limpiar estado de streaming al volver
       }
       setHint(null);
       return;
@@ -257,6 +272,7 @@ export default function App() {
         if (insight) {
           setExpandedId(insight._id.toString());
           setInputValue('');
+          resetStreaming(); // Limpiar estado de streaming al abrir nuevo insight
         }
         return;
       }
@@ -310,6 +326,7 @@ export default function App() {
 
   // Determinar si mostrar el input
   const showInput = !showHelp && !analyzing && !insightsLoading;
+  const inputDisabled = analyzing || isStreaming || isWaiting;
 
   // Render
   return (
@@ -337,7 +354,7 @@ export default function App() {
           <Input
             value={inputValue}
             onChange={setInputValue}
-            disabled={analyzing}
+            disabled={inputDisabled}
           />
           {/* URL hint inline */}
           {hint?.type === 'url' && !isExpanded && !analyzing && !inputValue && (
@@ -387,6 +404,10 @@ export default function App() {
           expandedInsight={currentInsight}
           searchQuery={!isExpanded ? inputValue : ''}
           showFavoritesOnly={showFavoritesOnly}
+          streamingText={streamingText}
+          isStreaming={isStreaming}
+          isWaiting={isWaiting}
+          streamError={streamError}
         />
       )}
     </Box>
