@@ -23,6 +23,7 @@ import { loadConfig, isConfigured, runSetup, showConfig, resetConfig, saveConfig
 import * as ui from './ui.js';
 import * as errors from './errors.js';
 import { saveRun, listRuns, buildAutoTitle, getRunById } from './db.js';
+import { streamAgent } from './agent/streamAgent.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -231,8 +232,6 @@ async function main() {
     if (results.some(r => r.text) && agentAvailable) {
       const agentResult = await runInsightAgent({
         provider: agentProvider,
-        geminiClient,
-        anthropicClient,
         results,
         style: normalizedStyle,
         styleFile: options.styleFile,
@@ -247,7 +246,7 @@ async function main() {
         conversationHistory = agentResult.history || [];
 
         // Mostrar resultado
-        if (agentData?.finalResponse) {
+        if (agentData?.finalResponse && !agentResult.streamed) {
           ui.showResult(stripXmlTags(agentData.finalResponse), {
             title: agentData.title || null
           });
@@ -272,7 +271,6 @@ async function main() {
     // Interactive chat mode
     if (agentProvider === 'gemini' && geminiClient && ui.isInteractive() && agentData?.finalResponse) {
       await startConversationLoop({
-        client: geminiClient,
         results,
         options,
         config,
@@ -701,7 +699,7 @@ async function readPlainText(filePath, inlineText = null) {
 
 // ============ AGENT ============
 
-async function runInsightAgent({ provider, geminiClient, anthropicClient, results, style, styleFile, styleText, mode, config, directive }) {
+async function runInsightAgent({ provider, results, style, styleFile, styleText, mode, config, directive }) {
   const normalizedStyle = normalizeStyle(style) || 'bukowski';
   const promptPath = resolveAgentPromptPath(normalizedStyle);
   const promptSource = await fs.readFile(promptPath, 'utf8');
@@ -728,93 +726,36 @@ async function runInsightAgent({ provider, geminiClient, anthropicClient, result
     });
     ui.debug('Agent payload length:', payload.length);
 
-    const safetySettings = [
-      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' }
-    ];
-
-    const userContent = providerKey === 'claude'
-      ? { role: 'user', content: payload }
-      : { role: 'user', parts: [{ text: payload }] };
-
-    let response = null;
-    let assistantContent = null;
-
-    if (providerKey === 'claude') {
-      if (!anthropicClient) {
-        throw new errors.HumanError('Claude mode enabled but Anthropic client not initialized.');
+    let streamed = false;
+    const { agentData, history } = await streamAgent({
+      provider: providerKey,
+      model,
+      promptSource,
+      payload,
+      config,
+      onStartStreaming: () => {
+        streamed = true;
+        spin.success('');
+        // Línea en blanco para separarse del spinner
+        if (process.stdout.isTTY) console.log('');
+      },
+      onToken: (textChunk) => {
+        // Mostrar solo la porción nueva del <final_response>
+        process.stdout.write(textChunk);
       }
+    });
 
-      response = await anthropicClient.messages.create({
-        model,
-        system: promptSource,
-        messages: [{ role: 'user', content: payload }],
-        max_tokens: config.agentMaxOutputTokens || 64000,
-        temperature: 1
-      });
-      assistantContent = response;
+    // Si nunca se disparó el streaming (respuesta corta), cerrar spinner
+    if (!streamed) {
+      spin.success('');
     } else {
-      response = await geminiClient.models.generateContent({
-        model,
-        contents: [userContent],
-        systemInstruction: { parts: [{ text: promptSource }] },
-        safetySettings,
-        config: {
-          maxOutputTokens: config.agentMaxOutputTokens || 64000,
-          temperature: 1,
-          thinkingLevel: config.thinkingLevel || 'HIGH',
-          mediaResolution: config.mediaResolution || 'MEDIA_RESOLUTION_HIGH'
-        }
-      });
-      assistantContent = response?.candidates?.[0]?.content || null;
+      if (process.stdout.isTTY) console.log('\n');
     }
 
-    spin.success('');
+    // Adjuntar ruta del prompt para persistencia
+    agentData.promptPath = promptPath;
 
-    const rawXml = extractResponseText(response, providerKey)?.trim() ?? '';
-    ui.debug('Raw response length:', rawXml.length);
-    ui.debug('Raw response preview:', rawXml.slice(0, 300));
-
-    const xml = extractResponseBlock(rawXml);
-
-    if (!xml) {
-      ui.debug('No <response> block found');
-      // Si no hay XML pero hay texto, mostrarlo como fallback
-      if (rawXml.length > 0) {
-        return {
-          agentData: { reflection: '', plan: '', finalResponse: rawXml, title: '', xml: '', promptPath },
-          history: providerKey === 'claude'
-            ? [userContent, { role: 'assistant', content: rawXml }].filter(Boolean)
-            : [userContent, response?.candidates?.[0]?.content].filter(Boolean)
-        };
-      }
-      return null;
-    }
-
-    const reflection = extractTag(xml, 'internal_reflection');
-    const plan = extractTag(xml, 'action_plan');
-    let finalResponse = extractTag(xml, 'final_response');
-    const title = extractTag(xml, 'title');
-
-    // If no <final_response> tag, use content inside <response> directly
-    if (!finalResponse && xml) {
-      // Extract content between <response> and </response>, stripping the outer tags
-      const innerContent = xml.replace(/^<response[^>]*>/, '').replace(/<\/response>$/, '').trim();
-      if (innerContent) {
-        finalResponse = innerContent;
-        ui.debug('Using direct response content (no final_response tag)');
-      }
-    }
-
-    return {
-      agentData: { reflection, plan, finalResponse, title, xml, promptPath },
-      history: providerKey === 'claude'
-        ? [userContent, { role: 'assistant', content: rawXml }].filter(Boolean)
-        : [userContent, assistantContent].filter(Boolean)
-    };
+    return { agentData, history, streamed };
 
   } catch (error) {
     spin.error('Error');
@@ -865,7 +806,7 @@ function buildAgentPayload({ results, styleKey, preset, customStyle, directive }
 
 // ============ CHAT ============
 
-async function startConversationLoop({ client, results, options, config, conversationHistory, runId = null }) {
+async function startConversationLoop({ results, options, config, conversationHistory, runId = null }) {
   const normalizedStyle = normalizeStyle(options.style) || 'bukowski';
   const promptPath = resolveAgentPromptPath(normalizedStyle);
   const promptSource = await fs.readFile(promptPath, 'utf8');
@@ -895,62 +836,39 @@ async function startConversationLoop({ client, results, options, config, convers
         directive: options.directive
       });
 
-      const userContent = { role: 'user', parts: [{ text: payload }] };
-
-      const response = await client.models.generateContent({
+      let streamed = false;
+      const { agentData, history } = await streamAgent({
+        provider: 'gemini', // Chat loop es solo para Gemini
         model: chatModel,
-        contents: [...conversationHistory, userContent],
-        systemInstruction: { parts: [{ text: promptSource }] },
-        config: {
-          maxOutputTokens: config.agentMaxOutputTokens || 64000,
-          temperature: 1,
-          thinkingLevel: config.thinkingLevel || 'HIGH',
-          mediaResolution: config.mediaResolution || 'MEDIA_RESOLUTION_HIGH'
-        }
-      });
+        promptSource,
+      payload,
+      config,
+      history: conversationHistory,
+      onStartStreaming: () => {
+        streamed = true;
+        spin.success('');
+        if (process.stdout.isTTY) console.log('');
+      },
+      onToken: (textChunk) => {
+        process.stdout.write(textChunk);
+      }
+    });
 
-      spin.success('');
-
-      const rawXml = extractResponseText(response)?.trim() ?? '';
-      ui.debug('Chat raw response length:', rawXml.length);
-      ui.debug('Chat raw response preview:', rawXml.slice(0, 300));
-
-      const xml = extractResponseBlock(rawXml);
-      ui.debug('Chat xml block found:', !!xml, 'length:', xml?.length || 0);
-
-      let finalResponse = '';
-
-      if (xml) {
-        finalResponse = extractTag(xml, 'final_response');
-        ui.debug('Chat finalResponse from tag:', finalResponse?.length || 0);
-
-        // Fallback: if no <final_response> tag, use content inside <response> directly
-        if (!finalResponse) {
-          const innerContent = xml.replace(/^<response[^>]*>/, '').replace(/<\/response>$/, '').trim();
-          if (innerContent) {
-            finalResponse = innerContent;
-            ui.debug('Chat using direct response content (no final_response tag)');
-          }
-        }
-      } else if (rawXml.length > 0) {
-        // No XML block at all, use raw response
-        finalResponse = rawXml;
-        ui.debug('Chat using raw response (no xml block)');
+      if (!streamed) {
+        spin.success('');
+      } else if (process.stdout.isTTY) {
+        console.log('\n');
       }
 
-      if (finalResponse) {
-        ui.showResult(stripXmlTags(finalResponse));
+      const cleanResponse = stripXmlTags(agentData.finalResponse || '');
+      if (cleanResponse) {
+        if (!streamed) ui.showResult(cleanResponse);
+        conversationHistory = history || conversationHistory;
 
-        const assistantContent = response?.candidates?.[0]?.content;
-        if (assistantContent) {
-          conversationHistory.push(userContent, assistantContent);
-        }
-
-        // Save conversation to DB if we have a runId
         if (runId) {
           try {
             const { addConversation } = await import('./db.js');
-            await addConversation(runId, input, stripXmlTags(finalResponse));
+            await addConversation(runId, input, cleanResponse);
             ui.debug('Conversation saved to DB');
           } catch (saveErr) {
             ui.debug('Failed to save conversation:', saveErr.message);
@@ -1073,8 +991,6 @@ async function handleShowCommand(id, options = {}) {
     const canChat = ui.isInteractive() && provider === 'gemini' && config.geminiApiKey && (run.finalResponse || run.results?.some(r => r.text));
 
     if (canChat) {
-      const geminiClient = new GoogleGenAI({ apiKey: config.geminiApiKey });
-
       // Build conversation history from DB conversations
       const conversationHistory = [];
 
@@ -1092,7 +1008,6 @@ async function handleShowCommand(id, options = {}) {
       }
 
       await startConversationLoop({
-        client: geminiClient,
         results: run.results || [],
         options: { style: run.style, mode: run.mode },
         config,

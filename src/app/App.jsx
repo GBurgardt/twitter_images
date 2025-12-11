@@ -9,6 +9,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
+import Spinner from 'ink-spinner';
 import Fuse from 'fuse.js';
 
 import { useInsights } from './hooks/useInsights.js';
@@ -18,7 +19,6 @@ import { useStreamingChat } from './hooks/useStreamingChat.js';
 import Content from './components/Content.jsx';
 import Input from './components/Input.jsx';
 import Help from './components/Help.jsx';
-import StreamingText, { WaitingIndicator } from './components/StreamingText.jsx';
 
 // Configuración de Fuse para búsqueda fuzzy
 const FUSE_OPTIONS = {
@@ -182,10 +182,13 @@ export default function App() {
 
     // Usar streaming para la respuesta
     await sendQuestion(currentInsight, question, async () => {
-      // Cuando termine el streaming, refrescar para obtener la conversación guardada
+      // Cuando termine el streaming:
+      // 1. Refrescar para obtener la conversación guardada en DB
       await refresh();
+      // 2. Limpiar el streaming para que no aparezca duplicado
+      resetStreaming();
     });
-  }, [currentInsight, sendQuestion, refresh, isStreaming, isWaiting]);
+  }, [currentInsight, sendQuestion, refresh, resetStreaming, isStreaming, isWaiting]);
 
   // Handle delete
   const handleDelete = useCallback(async () => {
@@ -347,17 +350,17 @@ export default function App() {
         </Box>
       )}
 
-      {/* INPUT - limpio, sin lupa */}
-      {showInput && !showHelp && (
+      {/* INPUT ARRIBA - solo en lista (para buscar) */}
+      {showInput && !showHelp && !isExpanded && (
         <Box paddingX={1} marginY={1}>
-          <Text dimColor>{isExpanded ? '› ' : '  '}</Text>
+          <Text dimColor>  </Text>
           <Input
             value={inputValue}
             onChange={setInputValue}
             disabled={inputDisabled}
           />
           {/* URL hint inline */}
-          {hint?.type === 'url' && !isExpanded && !analyzing && !inputValue && (
+          {hint?.type === 'url' && !analyzing && !inputValue && (
             <>
               <Text dimColor> · </Text>
               <Text color="green">↵</Text>
@@ -396,7 +399,7 @@ export default function App() {
         </Box>
       )}
 
-      {/* Main content - DESPUÉS del input */}
+      {/* Main content */}
       {!analyzing && !insightsLoading && !showHelp && (
         <Content
           insights={filteredInsights}
@@ -409,6 +412,18 @@ export default function App() {
           isWaiting={isWaiting}
           streamError={streamError}
         />
+      )}
+
+      {/* INPUT ABAJO - solo en chat expandido (para preguntar) */}
+      {showInput && !showHelp && isExpanded && (
+        <Box paddingX={1} marginY={1}>
+          <Text dimColor>› </Text>
+          <Input
+            value={inputValue}
+            onChange={setInputValue}
+            disabled={inputDisabled}
+          />
+        </Box>
       )}
     </Box>
   );
