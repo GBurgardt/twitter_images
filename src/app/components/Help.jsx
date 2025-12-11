@@ -12,11 +12,11 @@ const shortcuts = [
   { key: '↑↓', desc: 'navegar' },
   { key: 'Enter', desc: 'abrir / enviar' },
   { key: 'Esc', desc: 'volver / limpiar' },
-  { key: 's', desc: '★ marcar favorito' },
-  { key: 'F', desc: 'filtrar favoritos' },
-  { key: 'd', desc: 'eliminar (en insight)' },
-  { key: 'c', desc: 'copiar url (en insight)' },
-  { key: 'q', desc: 'salir' },
+  { key: '^s', desc: '★ favorito' },
+  { key: '^f', desc: 'filtrar favoritos' },
+  { key: '^d', desc: 'eliminar' },
+  { key: '^y', desc: 'copiar url' },
+  { key: '^c', desc: 'salir' },
 ];
 
 export default function Help() {

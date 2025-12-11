@@ -194,10 +194,10 @@ export default function App() {
     }
   }, [currentInsight, toggleFavorite]);
 
-  // Keyboard handling
+  // Keyboard handling - CTRL+tecla para acciones, tecla sola para búsqueda
   useInput((input, key) => {
-    // Help toggle
-    if (input === '?' && !inputValue) {
+    // Help toggle - ? solo cuando input vacío
+    if (input === '?' && !inputValue && !isExpanded) {
       setShowHelp(h => !h);
       return;
     }
@@ -208,8 +208,8 @@ export default function App() {
       return;
     }
 
-    // Quit - solo si no hay input
-    if (input === 'q' && !inputValue && !isExpanded) {
+    // Ctrl+Q o Ctrl+C para salir
+    if (key.ctrl && (input === 'q' || input === 'c') && !isExpanded) {
       exit();
       return;
     }
@@ -217,30 +217,23 @@ export default function App() {
     // Escape - limpia input o vuelve atrás
     if (key.escape) {
       if (inputValue) {
-        // Primero limpiar el input
         setInputValue('');
       } else if (isExpanded) {
-        // Luego cerrar el insight
         setExpandedId(null);
       }
       setHint(null);
       return;
     }
 
-    // When hint is showing and not expanded
+    // URL hint - Enter para analizar
     if (hint?.type === 'url' && !isExpanded && !analyzing && !inputValue) {
       if (key.return) {
         handleAnalyze(hint.url);
         return;
       }
-      // Cualquier tecla de texto dismissea el hint y empieza búsqueda
-      if (input && input !== '?' && input !== 'q') {
-        setHint(null);
-        // La letra se agregará al input por el componente Input
-      }
     }
 
-    // Navigation in list - SIEMPRE funciona con flechas
+    // Navigation - flechas SIEMPRE funcionan
     if (!isExpanded) {
       if (key.upArrow) {
         setSelectedIndex(i => Math.max(0, i - 1));
@@ -250,8 +243,16 @@ export default function App() {
         setSelectedIndex(i => Math.min(filteredInsights.length - 1, i + 1));
         return;
       }
-      // Enter abre el seleccionado
-      if (key.return && filteredInsights.length > 0 && !inputValue) {
+    }
+
+    // Enter - abrir insight o enviar pregunta
+    if (key.return) {
+      if (isExpanded && inputValue.trim()) {
+        handleSendQuestion(inputValue);
+        setInputValue('');
+        return;
+      }
+      if (!isExpanded && filteredInsights.length > 0) {
         const insight = filteredInsights[selectedIndex];
         if (insight) {
           setExpandedId(insight._id.toString());
@@ -261,66 +262,54 @@ export default function App() {
       }
     }
 
-    // Delete insight
-    if (input === 'd' && isExpanded && !inputValue) {
+    // === CTRL + TECLA = ACCIONES (no interfieren con búsqueda) ===
+
+    // Ctrl+S - Star/favorito del seleccionado (en lista o en insight)
+    if (key.ctrl && input === 's') {
+      if (isExpanded) {
+        handleToggleFavorite();
+      } else {
+        const insight = filteredInsights[selectedIndex];
+        if (insight) {
+          handleToggleFavorite(insight._id);
+        }
+      }
+      return;
+    }
+
+    // Ctrl+F - Filtrar favoritos (solo en lista)
+    if (key.ctrl && input === 'f' && !isExpanded) {
+      toggleFavoritesFilter();
+      setSelectedIndex(0);
+      return;
+    }
+
+    // Ctrl+D - Delete (solo en insight expandido)
+    if (key.ctrl && input === 'd' && isExpanded) {
       handleDelete();
       return;
     }
 
-    // Copy URL
-    if (input === 'c' && isExpanded && !inputValue) {
+    // Ctrl+Y - Copiar URL (solo en insight expandido)
+    if (key.ctrl && input === 'y' && isExpanded) {
       if (currentInsight?.source?.url) {
         import('clipboardy').then(({ default: clipboard }) => {
           clipboard.writeSync(currentInsight.source.url);
-          setHint({ type: 'copied', text: 'Copiado' });
+          setHint({ type: 'copied', text: 'URL copiada' });
           setTimeout(() => setHint(h => h?.type === 'copied' ? null : h), 1500);
         });
       }
       return;
     }
 
-    // Toggle favorite (F key)
-    if ((input === 'f' || input === 'F') && !inputValue) {
-      if (isExpanded) {
-        // Toggle favorito del insight actual
-        handleToggleFavorite();
-      } else {
-        // Toggle filtro de favoritos en la lista
-        toggleFavoritesFilter();
-        setSelectedIndex(0); // Reset selection
-      }
-      return;
-    }
-
-    // Star/unstar desde la lista (s key) - marca favorito sin abrir
-    if ((input === 's' || input === 'S') && !inputValue && !isExpanded) {
-      const insight = filteredInsights[selectedIndex];
-      if (insight) {
-        handleToggleFavorite(insight._id);
-      }
-      return;
+    // Dismiss URL hint cuando el usuario empieza a escribir
+    if (hint?.type === 'url' && input && !key.ctrl) {
+      setHint(null);
     }
   });
 
-  // Handle input submit
-  const handleInputSubmit = useCallback((value) => {
-    if (isExpanded && value.trim()) {
-      // En vista expandida, enviar pregunta
-      handleSendQuestion(value);
-    } else if (!isExpanded && filteredInsights.length > 0) {
-      // En lista con búsqueda, abrir el primer resultado
-      const insight = filteredInsights[selectedIndex] || filteredInsights[0];
-      if (insight) {
-        setExpandedId(insight._id.toString());
-        setInputValue('');
-      }
-    }
-  }, [isExpanded, filteredInsights, selectedIndex, handleSendQuestion]);
-
-  // Determinar si mostrar el input y qué placeholder usar
+  // Determinar si mostrar el input
   const showInput = !showHelp && !analyzing && !insightsLoading;
-  const inputPlaceholder = isExpanded ? '' : '';
-  const inputPrefix = isExpanded ? '› ' : '🔍 ';
 
   // Render
   return (
@@ -341,22 +330,20 @@ export default function App() {
         </Box>
       )}
 
-      {/* INPUT PRIMERO - Search-first experience */}
+      {/* INPUT - limpio, sin lupa */}
       {showInput && !showHelp && (
         <Box paddingX={1} marginY={1}>
-          <Text color="cyan">{inputPrefix}</Text>
+          <Text dimColor>{isExpanded ? '› ' : '  '}</Text>
           <Input
             value={inputValue}
             onChange={setInputValue}
-            onSubmit={handleInputSubmit}
-            placeholder={inputPlaceholder}
             disabled={analyzing}
           />
           {/* URL hint inline */}
           {hint?.type === 'url' && !isExpanded && !analyzing && !inputValue && (
             <>
               <Text dimColor> · </Text>
-              <Text color="green">[Enter]</Text>
+              <Text color="green">↵</Text>
               <Text dimColor> {hint.text}</Text>
             </>
           )}

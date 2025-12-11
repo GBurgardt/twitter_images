@@ -133,8 +133,15 @@ function InsightList({ insights, selectedIndex, showFavoritesOnly, searchQuery }
         );
       })}
       {insights.length > 20 && (
+        <Box paddingX={1}>
+          <Text dimColor>  +{insights.length - 20}</Text>
+        </Box>
+      )}
+
+      {/* Hints sutiles - solo cuando no hay búsqueda activa */}
+      {!searchQuery && (
         <Box paddingX={1} marginTop={1}>
-          <Text dimColor>… {insights.length - 20} más</Text>
+          <Text dimColor>^s ★  ^f filtrar  ? ayuda</Text>
         </Box>
       )}
     </Box>
