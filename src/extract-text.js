@@ -35,6 +35,16 @@ const DEFAULT_SESSION_LOG = path.join(PROJECT_ROOT, 'current_session.txt');
 dotenv.config({ path: path.join(PROJECT_ROOT, '.env'), override: false });
 
 // --- Streaming helpers for nicer CLI output ---
+const ANSI_RESET = '\x1b[0m';
+
+function createAnsiColor({ fg, bg }) {
+  const parts = [];
+  if (fg) parts.push(`38;2;${fg[0]};${fg[1]};${fg[2]}`);
+  if (bg) parts.push(`48;2;${bg[0]};${bg[1]};${bg[2]}`);
+  if (!parts.length) return '';
+  return `\x1b[${parts.join(';')}m`;
+}
+
 function createBoxedStreamer(stdout, opts = {}) {
   const cols = stdout?.columns || 80;
   const innerWidth = Math.max(40, Math.floor(cols * (opts.widthRatio || 0.6)));
@@ -44,23 +54,29 @@ function createBoxedStreamer(stdout, opts = {}) {
   let lineLen = 0;
   let lineOpen = false;
 
+  const borderColor = opts.fgColor || [230, 230, 230];
+  const textColorArr = opts.textColor || [240, 240, 240];
+  const bgColor = opts.bgColor || [18, 18, 18]; // dark slate for contrast
+  const borderAnsi = createAnsiColor({ fg: borderColor, bg: bgColor });
+  const textAnsi = createAnsiColor({ fg: textColorArr, bg: bgColor });
+
   const writeTop = () => {
-    stdout.write(`\n${margin}┌${'─'.repeat(innerWidth)}┐\n`);
+    stdout.write(`\n${margin}${borderAnsi}┌${'─'.repeat(innerWidth)}┐${ANSI_RESET}\n`);
   };
 
   const writeBottom = () => {
-    stdout.write(`${margin}└${'─'.repeat(innerWidth)}┘\n`);
+    stdout.write(`${margin}${borderAnsi}└${'─'.repeat(innerWidth)}┘${ANSI_RESET}\n`);
   };
 
   const openLine = () => {
-    stdout.write(`${margin}│ `);
+    stdout.write(`${margin}${borderAnsi}│ ${textAnsi}`);
     lineOpen = true;
     lineLen = 0;
   };
 
   const closeLine = () => {
     const pad = Math.max(0, contentWidth - lineLen);
-    stdout.write(`${' '.repeat(pad)} │\n`);
+    stdout.write(`${' '.repeat(pad)} ${borderAnsi}│${ANSI_RESET}\n`);
     lineOpen = false;
     lineLen = 0;
   };
@@ -107,7 +123,7 @@ function createBoxedStreamer(stdout, opts = {}) {
   };
 }
 
-function createSmoothWriter(writer, { delayMs = 2 } = {}) {
+function createSmoothWriter(writer, { delayMs = 1 } = {}) {
   let pending = Promise.resolve();
 
   const sleep = (ms) => new Promise(res => setTimeout(res, ms));
@@ -837,16 +853,16 @@ async function runInsightAgent({ provider, results, style, styleFile, styleText,
       onStartStreaming: () => {
         streamed = true;
         spin.success('');
-        boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.7 });
+        boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.6 });
         boxWriter.start();
-        smooth = createSmoothWriter(boxWriter, { delayMs: 3 });
+        smooth = createSmoothWriter(boxWriter);
       },
       onToken: (textChunk) => {
         if (!textChunk) return;
         if (!boxWriter) {
-          boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.7 });
+          boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.6 });
           boxWriter.start();
-          smooth = createSmoothWriter(boxWriter, { delayMs: 3 });
+          smooth = createSmoothWriter(boxWriter);
         }
         smooth.enqueue(textChunk);
       }
@@ -958,16 +974,16 @@ async function startConversationLoop({ results, options, config, conversationHis
         onStartStreaming: () => {
           streamed = true;
           spin.success('');
-          boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.7 });
+          boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.6 });
           boxWriter.start();
-          smooth = createSmoothWriter(boxWriter, { delayMs: 3 });
+          smooth = createSmoothWriter(boxWriter);
         },
         onToken: (textChunk) => {
           if (!textChunk) return;
           if (!boxWriter) {
-            boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.7 });
+            boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.6 });
             boxWriter.start();
-            smooth = createSmoothWriter(boxWriter, { delayMs: 3 });
+            smooth = createSmoothWriter(boxWriter);
           }
           smooth.enqueue(textChunk);
         }
