@@ -9,14 +9,14 @@ import React from 'react';
 import { Box, Text } from 'ink';
 
 const shortcuts = [
-  { key: '↑↓', desc: 'navigate' },
-  { key: 'Enter', desc: 'open / send' },
-  { key: 'Esc', desc: 'back' },
-  { key: '/', desc: 'search' },
-  { key: 'F', desc: '★ favorite / filter' },
-  { key: 'd', desc: 'delete' },
-  { key: 'c', desc: 'copy url' },
-  { key: 'q', desc: 'quit' },
+  { key: '↑↓', desc: 'navegar' },
+  { key: 'Enter', desc: 'abrir / enviar' },
+  { key: 'Esc', desc: 'volver / limpiar' },
+  { key: 's', desc: '★ marcar favorito' },
+  { key: 'F', desc: 'filtrar favoritos' },
+  { key: 'd', desc: 'eliminar (en insight)' },
+  { key: 'c', desc: 'copiar url (en insight)' },
+  { key: 'q', desc: 'salir' },
 ];
 
 export default function Help() {
@@ -29,7 +29,7 @@ export default function Help() {
         </Box>
       ))}
       <Box marginTop={1}>
-        <Text dimColor italic>any key to close</Text>
+        <Text dimColor italic>cualquier tecla para cerrar</Text>
       </Box>
     </Box>
   );

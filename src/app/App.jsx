@@ -291,6 +291,15 @@ export default function App() {
       }
       return;
     }
+
+    // Star/unstar desde la lista (s key) - marca favorito sin abrir
+    if ((input === 's' || input === 'S') && !inputValue && !isExpanded) {
+      const insight = filteredInsights[selectedIndex];
+      if (insight) {
+        handleToggleFavorite(insight._id);
+      }
+      return;
+    }
   });
 
   // Handle input submit
