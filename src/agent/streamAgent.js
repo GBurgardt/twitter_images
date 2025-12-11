@@ -200,7 +200,8 @@ export async function streamAgent({
 
   const assistantContent = provider === 'claude'
     ? { role: 'assistant', content: rawXml }
-    : { role: 'assistant', parts: [{ text: rawXml }] };
+    // Gemini expects model role for assistant turns
+    : { role: 'model', parts: [{ text: rawXml }] };
 
   const userContent = provider === 'claude'
     ? { role: 'user', content: payload }

@@ -811,6 +811,17 @@ async function readPlainText(filePath, inlineText = null) {
   return data.trim();
 }
 
+function maskConfig(config = {}) {
+  const clone = { ...config };
+  for (const key of Object.keys(clone)) {
+    const lower = key.toLowerCase();
+    if (lower.includes('key') || lower.includes('secret') || lower.includes('token') || lower.includes('url') || lower.includes('password')) {
+      clone[key] = '***';
+    }
+  }
+  return clone;
+}
+
 // ============ AGENT ============
 
 async function runInsightAgent({ provider, results, style, styleFile, styleText, mode, config, directive }) {
@@ -830,8 +841,10 @@ async function runInsightAgent({ provider, results, style, styleFile, styleText,
 
   const spin = ui.spinner('Thinking...');
 
+  let payload = '';
+
   try {
-    const payload = buildAgentPayload({
+    payload = buildAgentPayload({
       results,
       styleKey: normalizedStyle,
       preset,
@@ -839,6 +852,10 @@ async function runInsightAgent({ provider, results, style, styleFile, styleText,
       directive
     });
     ui.debug('Agent payload length:', payload.length);
+    ui.debug('Agent request meta:', {
+      model,
+      config: maskConfig(config)
+    });
 
     let streamed = false;
     let boxWriter = null;
@@ -885,6 +902,12 @@ async function runInsightAgent({ provider, results, style, styleFile, styleText,
   } catch (error) {
     spin.error('Error');
     ui.debug('Agent error:', error);
+    ui.debug('Agent error detail:', {
+      error,
+      model,
+      payloadLength: payload?.length || 0,
+      config: maskConfig(config)
+    });
 
     if (error?.status === 429 || error?.message?.includes('quota')) {
       throw new errors.HumanError('API rate limit reached.', {
@@ -964,30 +987,94 @@ async function startConversationLoop({ results, options, config, conversationHis
       let streamed = false;
       let boxWriter = null;
       let smooth = null;
-      const { agentData, history } = await streamAgent({
-        provider: 'gemini', // Chat loop es solo para Gemini
+      let agentData = null;
+      let history = null;
+
+      ui.debug('Chat stream request:', {
         model: chatModel,
-        promptSource,
-        payload,
-        config,
-        history: conversationHistory,
-        onStartStreaming: () => {
-          streamed = true;
-          spin.success('');
-          boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.6 });
-          boxWriter.start();
-          smooth = createSmoothWriter(boxWriter);
-        },
-        onToken: (textChunk) => {
-          if (!textChunk) return;
-          if (!boxWriter) {
+        payloadLength: payload.length,
+        historyLength: conversationHistory.length,
+        historyRoles: conversationHistory.map(h => h.role),
+        config: maskConfig(config)
+      });
+
+      try {
+        const streamedResult = await streamAgent({
+          provider: 'gemini', // Chat loop es solo para Gemini
+          model: chatModel,
+          promptSource,
+          payload,
+          config,
+          history: conversationHistory,
+          onStartStreaming: () => {
+            streamed = true;
+            spin.success('');
             boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.6 });
             boxWriter.start();
             smooth = createSmoothWriter(boxWriter);
+          },
+          onToken: (textChunk) => {
+            if (!textChunk) return;
+            if (!boxWriter) {
+              boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.6 });
+              boxWriter.start();
+              smooth = createSmoothWriter(boxWriter);
+            }
+            smooth.enqueue(textChunk);
           }
-          smooth.enqueue(textChunk);
+        });
+        agentData = streamedResult.agentData;
+        history = streamedResult.history;
+      } catch (err) {
+        // Fallback a no-stream cuando el streaming falla (ej. 500 internos)
+        ui.debug('Chat streaming failed, fallback to non-stream:', err?.message, err?.stack);
+        ui.debug('Chat streaming error detail:', {
+          error: err,
+          model: chatModel,
+          payloadLength: payload.length,
+          historyLength: conversationHistory.length,
+          historyRoles: conversationHistory.map(h => h.role),
+          config: maskConfig(config)
+        });
+        const client = new GoogleGenAI({ apiKey: config.geminiApiKey });
+        const userContent = { role: 'user', parts: [{ text: payload }] };
+        ui.debug('Chat fallback request:', {
+          model: chatModel,
+          payloadLength: payload.length,
+          historyLength: conversationHistory.length,
+          historyRoles: conversationHistory.map(h => h.role),
+          config: maskConfig(config)
+        });
+        const response = await client.models.generateContent({
+          model: chatModel,
+          contents: [...conversationHistory, userContent],
+          systemInstruction: { parts: [{ text: promptPath ? await fs.readFile(promptPath, 'utf8') : '' }] },
+          config: {
+            maxOutputTokens: config.agentMaxOutputTokens || 64000,
+            temperature: 1,
+            thinkingLevel: config.thinkingLevel || 'HIGH',
+            mediaResolution: config.mediaResolution || 'MEDIA_RESOLUTION_HIGH'
+          }
+        });
+        spin.success('');
+        const rawXml = extractResponseText(response)?.trim() ?? '';
+        const xml = extractResponseBlock(rawXml);
+        let finalResponse = '';
+        if (xml) {
+          finalResponse = extractTag(xml, 'final_response') || xml.replace(/^<response[^>]*>/, '').replace(/<\/response>$/, '').trim();
+        } else if (rawXml.length > 0) {
+          finalResponse = rawXml;
         }
-      });
+        agentData = {
+          reflection: extractTag(xml, 'internal_reflection'),
+          plan: extractTag(xml, 'action_plan'),
+          finalResponse,
+          title: extractTag(xml, 'title'),
+          xml,
+          promptPath
+        };
+        history = [...conversationHistory, userContent, response?.candidates?.[0]?.content].filter(Boolean);
+      }
 
       if (!streamed) {
         spin.success('');
@@ -1018,6 +1105,14 @@ async function startConversationLoop({ results, options, config, conversationHis
     } catch (error) {
       spin.error('Error');
       ui.debug('Chat error:', error);
+      ui.debug('Chat error detail:', {
+        error,
+        model: chatModel,
+        payloadLength: payload.length,
+        historyLength: conversationHistory.length,
+        historyRoles: conversationHistory.map(h => h.role),
+        config: maskConfig(config)
+      });
 
       // Better error messages for common cases
       if (error?.status === 500) {
