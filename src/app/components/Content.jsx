@@ -12,7 +12,7 @@ import { Box, Text } from 'ink';
 import Markdown from './Markdown.jsx';
 
 /**
- * Format relative date
+ * Format relative date - EN ESPAÑOL
  */
 function formatDate(date) {
   if (!date) return '';
@@ -23,83 +23,76 @@ function formatDate(date) {
   const hours = Math.floor(diff / 3600000);
   const days = Math.floor(diff / 86400000);
 
-  if (mins < 1) return 'now';
+  if (mins < 1) return 'ahora';
   if (mins < 60) return `${mins}m`;
   if (hours < 24) return `${hours}h`;
-  if (days === 1) return 'yesterday';
+  if (days === 1) return 'ayer';
   if (days < 7) return `${days}d`;
-  return d.toLocaleDateString('en', { day: 'numeric', month: 'short' });
+  return d.toLocaleDateString('es', { day: 'numeric', month: 'short' });
 }
 
 /**
- * Header - always visible, orients the user
+ * Detecta si un título es "real" (generado por LLM) o basura (transcripción cortada)
  */
-function Header({ title, count, showFavoritesOnly, isFavorite }) {
-  return (
-    <Box borderStyle="single" borderColor="gray" paddingX={2} marginBottom={1}>
-      <Box flexGrow={1}>
-        <Text bold color="cyan">twx</Text>
-        <Text dimColor> · </Text>
-        {showFavoritesOnly && <Text color="#FFD700">★ </Text>}
-        {isFavorite && <Text color="#FFD700">★ </Text>}
-        {title && <Text>{title}</Text>}
-      </Box>
-      {count !== undefined && (
-        <Text dimColor>{count} items</Text>
-      )}
-    </Box>
-  );
+function isRealTitle(title) {
+  if (!title || title === 'Untitled') return false;
+  const t = title.trim();
+  if (t.length < 3) return false;
+  // Un buen título tiene máx 8 palabras y no empieza con minúscula típica de transcripción
+  const words = t.split(/\s+/);
+  if (words.length > 12) return false; // Demasiado largo = probablemente transcripción
+  // Si empieza con artículo/pronombre en minúscula y tiene >50 chars, es transcripción
+  if (t.length > 50 && /^(the|a|an|i|it|he|she|we|they|yes|no|so|well|essentially|basically|who|what|when|where|why|how|el|la|los|las|un|una|yo|él|ella|es|si|no|bueno|así)/i.test(t)) {
+    return false;
+  }
+  return true;
 }
 
 /**
- * Footer - shortcuts always visible
+ * Generate a smart fallback title from content
  */
-function Footer({ mode, showFavoritesOnly }) {
-  const shortcuts = mode === 'list'
-    ? [
-        { key: '↑↓', label: 'navigate' },
-        { key: 'Enter', label: 'open' },
-        { key: 'F', label: showFavoritesOnly ? 'show all' : '★ favorites' },
-        { key: '/', label: 'search' },
-        { key: 'q', label: 'quit' },
-      ]
-    : [
-        { key: '↑↓', label: 'scroll' },
-        { key: 'F', label: '★ favorite' },
-        { key: 'Esc', label: 'back' },
-        { key: 'd', label: 'delete' },
-      ];
+function getDisplayTitle(insight) {
+  // Si tiene título REAL (corto, generado por LLM), usarlo
+  if (isRealTitle(insight.title)) {
+    return insight.title;
+  }
 
-  return (
-    <Box borderStyle="single" borderColor="gray" paddingX={2} marginTop={1}>
-      <Box gap={3}>
-        {shortcuts.map(({ key, label }) => (
-          <Box key={key} gap={1}>
-            <Text color="cyan">[{key}]</Text>
-            <Text dimColor>{label}</Text>
-          </Box>
-        ))}
-      </Box>
-    </Box>
-  );
+  // Fallback: preview del contenido (primera línea del finalResponse)
+  const content = insight.finalResponse || '';
+  if (content) {
+    const firstLine = content.split('\n').find(line => line.trim()) || '';
+    const preview = firstLine.slice(0, 50).trim();
+    if (preview) {
+      return preview + (firstLine.length > 50 ? '…' : '');
+    }
+  }
+
+  // Último fallback
+  return 'Sin título';
 }
+
 
 /**
  * Insight list - with visible selector from the start
  */
-function InsightList({ insights, selectedIndex, showFavoritesOnly }) {
+function InsightList({ insights, selectedIndex, showFavoritesOnly, searchQuery }) {
   if (!insights.length) {
     return (
       <Box flexDirection="column" paddingY={2} paddingX={2}>
-        {showFavoritesOnly ? (
+        {searchQuery ? (
           <>
-            <Text dimColor>No favorites saved.</Text>
-            <Text dimColor>Press F to show all insights.</Text>
+            <Text dimColor>No hay resultados para "{searchQuery}"</Text>
+            <Text dimColor>Prueba con otros términos o presiona Esc para limpiar.</Text>
+          </>
+        ) : showFavoritesOnly ? (
+          <>
+            <Text dimColor>No hay favoritos guardados.</Text>
+            <Text dimColor>Presiona F para ver todos los insights.</Text>
           </>
         ) : (
           <>
-            <Text dimColor>No saved insights.</Text>
-            <Text dimColor>Copy a URL and run: twx {'<url>'}</Text>
+            <Text dimColor>No hay insights guardados.</Text>
+            <Text dimColor>Copia una URL y ejecuta: twx {'<url>'}</Text>
           </>
         )}
       </Box>
@@ -110,39 +103,29 @@ function InsightList({ insights, selectedIndex, showFavoritesOnly }) {
   const visibleInsights = insights.slice(0, 20);
 
   return (
-    <Box flexDirection="column" paddingY={1}>
+    <Box flexDirection="column">
       {visibleInsights.map((insight, index) => {
         const isSelected = index === selectedIndex;
         const isFavorite = insight.isFavorite;
-        const title = insight.title || 'Untitled';
-        // Use updatedAt for last activity, fallback to createdAt
+        const title = getDisplayTitle(insight);
         const date = formatDate(insight.updatedAt || insight.createdAt);
-        // Count conversations
-        const msgCount = (insight.conversations || []).length;
 
         return (
-          <Box key={insight._id.toString()}>
-            {/* Selection indicator - ALWAYS visible */}
-            <Text color={isSelected ? 'cyan' : undefined}>
-              {isSelected ? ' ▶ ' : '   '}
+          <Box key={insight._id.toString()} paddingX={1}>
+            {/* Selector minimalista › */}
+            <Text color={isSelected ? 'cyan' : 'gray'}>
+              {isSelected ? '› ' : '  '}
             </Text>
             {/* Favorite star */}
-            <Text color="#FFD700">
-              {isFavorite ? '★ ' : '  '}
-            </Text>
-            {/* Title with highlight if selected */}
+            {isFavorite && <Text color="#FFD700">★ </Text>}
+            {/* Title */}
             <Text
-              backgroundColor={isSelected ? 'blue' : undefined}
               color={isSelected ? 'white' : undefined}
               bold={isSelected}
             >
-              {title.slice(0, 45)}{title.length > 45 ? '...' : ''}
+              {title.slice(0, 55)}{title.length > 55 ? '…' : ''}
             </Text>
-            {/* Conversation count */}
-            {msgCount > 0 && (
-              <Text dimColor> ({msgCount})</Text>
-            )}
-            {/* Date on the right */}
+            {/* Date - solo si no está seleccionado */}
             {!isSelected && date && (
               <Text dimColor> · {date}</Text>
             )}
@@ -150,8 +133,8 @@ function InsightList({ insights, selectedIndex, showFavoritesOnly }) {
         );
       })}
       {insights.length > 20 && (
-        <Box paddingX={3} marginTop={1}>
-          <Text dimColor>... and {insights.length - 20} more</Text>
+        <Box paddingX={1} marginTop={1}>
+          <Text dimColor>… {insights.length - 20} más</Text>
         </Box>
       )}
     </Box>
@@ -164,13 +147,19 @@ function InsightList({ insights, selectedIndex, showFavoritesOnly }) {
 function InsightView({ insight }) {
   if (!insight) return null;
 
-  const title = insight.title || 'Untitled';
+  const title = getDisplayTitle(insight);
   const content = insight.finalResponse || '';
   const conversations = insight.conversations || [];
 
   return (
     <Box flexDirection="column" paddingY={1} paddingX={1}>
-      {/* Main content in box */}
+      {/* Title - visible y claro */}
+      <Box marginBottom={1}>
+        {insight.isFavorite && <Text color="#FFD700">★ </Text>}
+        <Text bold>{title}</Text>
+      </Box>
+
+      {/* Main content in papyrus box */}
       <Box
         flexDirection="column"
         borderStyle="round"
@@ -188,7 +177,7 @@ function InsightView({ insight }) {
 
           {/* User question */}
           <Box marginTop={1}>
-            <Text dimColor italic>You: {conv.question}</Text>
+            <Text dimColor italic>Tú: {conv.question}</Text>
           </Box>
 
           {/* Response */}
@@ -203,51 +192,27 @@ function InsightView({ insight }) {
 
 /**
  * Content - shows list or insight based on state
- * WITH header and footer to orient the user
+ * MINIMALISTA: sin header ni footer (todo está en App.jsx)
  */
 export default function Content({
   insights,
   selectedIndex,
   expandedInsight,
-  searchMode,
   searchQuery,
   showFavoritesOnly
 }) {
-  // If there's an expanded insight, show it
+  // Vista expandida de un insight
   if (expandedInsight) {
-    const title = expandedInsight.title || 'Insight';
-    const isFavorite = expandedInsight.isFavorite;
-    return (
-      <Box flexDirection="column">
-        <Header title={title} isFavorite={isFavorite} />
-        <InsightView insight={expandedInsight} />
-        <Footer mode="insight" />
-      </Box>
-    );
+    return <InsightView insight={expandedInsight} />;
   }
 
-  // Determine header title
-  let headerTitle = 'Library';
-  if (showFavoritesOnly) {
-    headerTitle = 'Favorites';
-  } else if (searchMode) {
-    headerTitle = `Searching: ${searchQuery}`;
-  }
-
-  // Show list
+  // Lista de insights
   return (
-    <Box flexDirection="column">
-      <Header
-        title={headerTitle}
-        count={insights.length}
-        showFavoritesOnly={showFavoritesOnly}
-      />
-      <InsightList
-        insights={insights}
-        selectedIndex={selectedIndex}
-        showFavoritesOnly={showFavoritesOnly}
-      />
-      <Footer mode="list" showFavoritesOnly={showFavoritesOnly} />
-    </Box>
+    <InsightList
+      insights={insights}
+      selectedIndex={selectedIndex}
+      showFavoritesOnly={showFavoritesOnly}
+      searchQuery={searchQuery}
+    />
   );
 }

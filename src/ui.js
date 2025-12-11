@@ -14,6 +14,7 @@ import readline from 'node:readline/promises';
 import boxen from 'boxen';
 import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
+import Fuse from 'fuse.js';
 
 // Configure marked for elegant terminal output
 marked.use(markedTerminal({
@@ -105,7 +106,7 @@ export function showHistoryItem(run, options = {}) {
     ? formatRelativeDate(new Date(run.createdAt))
     : 'Fecha desconocida';
 
-  const title = run.title || 'Sin título';
+  const title = getSmartTitle(run);
   const source = run.source?.url || run.source?.path || '';
 
   console.log('');
@@ -152,8 +153,8 @@ export async function showHistoryList(runs, options = {}) {
 
   if (!runs.length) {
     console.log('');
-    clack.log.info('No history yet.');
-    clack.log.message('Use "twx <url>" to analyze content.');
+    clack.log.info('No hay historial todavía.');
+    clack.log.message('Usa "twx <url>" para analizar contenido.');
     return null;
   }
 
@@ -178,13 +179,13 @@ export async function showHistoryList(runs, options = {}) {
   if (hasMore) {
     choices.push({
       value: '__search__',
-      label: `🔍 Search (${sorted.length - MAX_VISIBLE} more)`,
+      label: `🔍 Buscar (${sorted.length - MAX_VISIBLE} más)`,
       hint: ''
     });
   }
 
   const selected = await clack.select({
-    message: 'Library',
+    message: 'Biblioteca',
     options: choices
   });
 
@@ -211,7 +212,7 @@ function formatRunChoice(run) {
   const date = run.updatedAt || run.createdAt
     ? formatRelativeDate(new Date(run.updatedAt || run.createdAt))
     : '';
-  const title = cleanTitle(run.title, run.finalResponse);
+  const title = getSmartTitle(run);
   const msgCount = (run.conversations || []).length;
   const favorite = run.isFavorite ? '★ ' : '  ';
   const chatIndicator = msgCount > 0 ? ` (${msgCount})` : '';
@@ -224,13 +225,49 @@ function formatRunChoice(run) {
 }
 
 /**
+ * Get smart title with better fallbacks
+ */
+function getSmartTitle(run) {
+  // Si tiene título real y útil
+  if (run.title &&
+      run.title !== 'Untitled' &&
+      run.title.trim().length > 3 &&
+      !run.title.startsWith('http')) {
+    return cleanTitle(run.title);
+  }
+
+  // Fallback: primera línea útil del contenido
+  if (run.finalResponse) {
+    const firstLine = extractFirstLine(run.finalResponse);
+    if (firstLine && firstLine.length > 5) {
+      return truncateAtWord(firstLine, 50);
+    }
+  }
+
+  // Último fallback: URL o path
+  if (run.source?.url) {
+    const url = run.source.url;
+    // Extraer algo útil de la URL
+    try {
+      const parsed = new URL(url);
+      const pathParts = parsed.pathname.split('/').filter(Boolean);
+      if (pathParts.length > 0) {
+        return pathParts[pathParts.length - 1].slice(0, 30);
+      }
+      return parsed.hostname;
+    } catch {
+      return truncate(url, 40);
+    }
+  }
+
+  return 'Sin título';
+}
+
+/**
  * Clean title for display
  */
-function cleanTitle(title, content) {
-  if (!title) {
-    // Fallback to first sentence of content
-    return extractFirstLine(content) || 'Untitled';
-  }
+function cleanTitle(title) {
+  if (!title) return 'Sin título';
 
   let clean = title;
 
@@ -246,9 +283,12 @@ function cleanTitle(title, content) {
   // Remove bullets and list markers
   clean = clean.replace(/^[\*\-•]\s*/, '').trim();
 
-  // If empty after cleaning, use content
+  // Remove XML tags
+  clean = clean.replace(/<[^>]+>/g, '').trim();
+
+  // If empty after cleaning
   if (!clean || clean.length < 3) {
-    return extractFirstLine(content) || 'Untitled';
+    return 'Sin título';
   }
 
   return clean;
@@ -263,8 +303,12 @@ function extractFirstLine(content) {
   for (const line of lines) {
     // Skip XML-like lines
     if (line.startsWith('<')) continue;
+    // Skip markdown headers
+    if (line.startsWith('#')) continue;
     // Skip very short lines
     if (line.length < 10) continue;
+    // Skip bullets
+    if (line.startsWith('*') || line.startsWith('-')) continue;
     return line;
   }
   return lines[0] || null;
@@ -287,12 +331,12 @@ function truncateAtWord(text, max) {
 }
 
 /**
- * Search functionality
+ * Search functionality with fuzzy matching
  */
 async function handleSearch(runs, onSelect) {
   const query = await clack.text({
-    message: 'Search:',
-    placeholder: 'type to filter by title or content...'
+    message: 'Buscar:',
+    placeholder: 'escribe para filtrar por título o contenido...'
   });
 
   if (clack.isCancel(query) || !query?.trim()) {
@@ -300,10 +344,11 @@ async function handleSearch(runs, onSelect) {
     return await showHistoryList(runs, { onSelect });
   }
 
-  const filtered = searchRuns(runs, query.trim());
+  const filtered = searchRunsFuzzy(runs, query.trim());
 
   if (filtered.length === 0) {
-    clack.log.warn(`No results for "${query}"`);
+    clack.log.warn(`Sin resultados para "${query}"`);
+    clack.log.message('Prueba con otros términos.');
     return await handleSearch(runs, onSelect);
   }
 
@@ -314,12 +359,12 @@ async function handleSearch(runs, onSelect) {
   // Add back option
   choices.push({
     value: '__back__',
-    label: '← Back to full list',
+    label: '← Volver a la lista completa',
     hint: ''
   });
 
   const selected = await clack.select({
-    message: `Results for "${truncate(query, 20)}"`,
+    message: `Resultados para "${truncate(query, 20)}"`,
     options: choices
   });
 
@@ -339,22 +384,32 @@ async function handleSearch(runs, onSelect) {
 }
 
 /**
- * Search runs by query (title + content + conversations)
+ * Search runs with fuzzy matching using Fuse.js
  */
-function searchRuns(runs, query) {
-  const q = query.toLowerCase();
+function searchRunsFuzzy(runs, query) {
+  // Preparar datos para Fuse
+  const searchableRuns = runs.map(run => ({
+    ...run,
+    _searchTitle: getSmartTitle(run),
+    _searchContent: run.finalResponse || '',
+    _searchConversations: (run.conversations || [])
+      .map(c => `${c.question || ''} ${c.answer || ''}`)
+      .join(' ')
+  }));
 
-  return runs.filter(run => {
-    const title = (run.title || '').toLowerCase();
-    const content = (run.finalResponse || '').toLowerCase();
-    const conversations = (run.conversations || [])
-      .map(c => `${c.question || ''} ${c.answer || ''}`.toLowerCase())
-      .join(' ');
-
-    return title.includes(q) ||
-           content.includes(q) ||
-           conversations.includes(q);
+  const fuse = new Fuse(searchableRuns, {
+    keys: [
+      { name: '_searchTitle', weight: 2 },
+      { name: '_searchContent', weight: 1 },
+      { name: '_searchConversations', weight: 0.5 }
+    ],
+    threshold: 0.4,
+    ignoreLocation: true,
+    minMatchCharLength: 2
   });
+
+  const results = fuse.search(query);
+  return results.map(r => r.item);
 }
 
 /**
@@ -452,7 +507,7 @@ export function showWelcome() {
 /**
  * Mensaje de fin de sesión
  */
-export function showGoodbye(message = 'Goodbye') {
+export function showGoodbye(message = 'Hasta luego') {
   clack.outro(message);
 }
 
@@ -494,7 +549,7 @@ function truncate(text, max) {
 }
 
 /**
- * Formatear fecha relativa
+ * Formatear fecha relativa - EN ESPAÑOL
  */
 function formatRelativeDate(date) {
   const now = new Date();
@@ -504,15 +559,15 @@ function formatRelativeDate(date) {
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
 
-  if (seconds < 60) return 'now';
+  if (seconds < 60) return 'ahora';
   if (minutes < 60) return `${minutes}m`;
   if (hours < 24) return `${hours}h`;
-  if (days === 1) return 'yesterday';
+  if (days === 1) return 'ayer';
   if (days < 7) return `${days}d`;
 
-  // Formatted date
+  // Formatted date in Spanish
   const day = date.getDate();
-  const month = date.toLocaleString('en', { month: 'short' });
+  const month = date.toLocaleString('es', { month: 'short' });
   return `${day} ${month}`;
 }
 

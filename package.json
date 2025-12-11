@@ -25,6 +25,7 @@
     "clipboardy": "^5.0.1",
     "dotenv": "^16.6.1",
     "enquirer": "^2.4.1",
+    "fuse.js": "^7.1.0",
     "gallery-dl": "^1.0.2",
     "ink": "^5.2.1",
     "ink-markdown": "^1.0.4",

@@ -2,7 +2,7 @@
 /**
  * twx - CLI wrapper
  *
- * Sin argumentos: abre biblioteca con chat interactivo
+ * Sin argumentos: abre app Ink (búsqueda primero, reactiva)
  * Con URL u otros argumentos: modo script (ejecuta y sale)
  */
 
@@ -13,17 +13,18 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT_PATH = path.join(__dirname, '../src/extract-text.js');
+const APP_PATH = path.join(__dirname, '../src/app/index.jsx');
 
 function main() {
   const args = process.argv.slice(2);
 
-  // Si no hay argumentos Y es TTY, abrir biblioteca (list command)
+  // Si no hay argumentos Y es TTY, abrir app Ink (experiencia search-first)
   const shouldLibrary = args.length === 0 ||
                         (args.length === 1 && (args[0] === '-i' || args[0] === '--interactive'));
 
   if (shouldLibrary && process.stdin.isTTY) {
-    // Abrir biblioteca - usa el mismo sistema de chat que twx <url>
-    const child = spawn(process.execPath, [SCRIPT_PATH, 'list', '--limit', '50'], {
+    // Lanzar app Ink directamente - experiencia search-first
+    const child = spawn(process.execPath, ['--import', 'tsx/esm', APP_PATH], {
       stdio: 'inherit',
       env: process.env
     });

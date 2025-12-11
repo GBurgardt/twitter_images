@@ -834,7 +834,7 @@ function buildAgentPayload({ results, styleKey, preset, customStyle, directive }
   const blocks = [];
 
   blocks.push('Idioma obligatorio: español neutro, tono directo y pragmático.');
-  blocks.push('Devuelve exclusivamente el bloque <response>…</response>.');
+  blocks.push('IMPORTANTE: Devuelve el XML con TODOS los tags requeridos: <response><title>...</title><internal_reflection>...</internal_reflection><action_plan>...</action_plan><final_response>...</final_response></response>');
   blocks.push(`Style preset: ${styleKey || 'none'}`);
 
   if (directive?.trim()) {
@@ -984,27 +984,24 @@ async function startConversationLoop({ client, results, options, config, convers
  */
 async function handleListCommand(options) {
   try {
-    // Load all runs once (search will filter these)
-    const runs = await listRuns({ limit: options.listLimit || 100 });
-
     // Loop until user quits
     while (true) {
+      // Load runs fresh EVERY time we show the list
+      // This ensures new insights from other processes appear
+      const runs = await listRuns({ limit: options.listLimit || 100 });
+
       const selected = await ui.showHistoryList(runs, {});
 
       // User cancelled (Ctrl+C or q)
       if (!selected) {
-        ui.clack.log.message('Goodbye.');
+        ui.clack.log.message('Hasta luego.');
         break;
       }
 
       // Open the selected insight with chat
       await handleShowCommand(selected, options);
 
-      // After chat ends, loop back to list
-      // Refresh runs in case conversations were added
-      const refreshedRuns = await listRuns({ limit: options.listLimit || 100 });
-      runs.length = 0;
-      runs.push(...refreshedRuns);
+      // Loop back to list - will load fresh data
     }
 
   } catch (error) {
