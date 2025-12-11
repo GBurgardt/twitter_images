@@ -37,21 +37,23 @@ dotenv.config({ path: path.join(PROJECT_ROOT, '.env'), override: false });
 // --- Streaming helpers for nicer CLI output ---
 function createBoxedStreamer(stdout, opts = {}) {
   const cols = stdout?.columns || 80;
-  const innerWidth = Math.max(40, Math.floor(cols * (opts.widthRatio || 0.7)));
+  const innerWidth = Math.max(40, Math.floor(cols * (opts.widthRatio || 0.6)));
   const contentWidth = Math.max(10, innerWidth - 2); // leave a space before closing border
+  const marginSize = Math.max(0, Math.floor((cols - innerWidth - 2) / 2));
+  const margin = ' '.repeat(marginSize);
   let lineLen = 0;
   let lineOpen = false;
 
   const writeTop = () => {
-    stdout.write(`\n┌${'─'.repeat(innerWidth)}┐\n`);
+    stdout.write(`\n${margin}┌${'─'.repeat(innerWidth)}┐\n`);
   };
 
   const writeBottom = () => {
-    stdout.write(`└${'─'.repeat(innerWidth)}┘\n`);
+    stdout.write(`${margin}└${'─'.repeat(innerWidth)}┘\n`);
   };
 
   const openLine = () => {
-    stdout.write('│ ');
+    stdout.write(`${margin}│ `);
     lineOpen = true;
     lineLen = 0;
   };
@@ -63,17 +65,34 @@ function createBoxedStreamer(stdout, opts = {}) {
     lineLen = 0;
   };
 
-  const writeChar = (ch) => {
-    if (!lineOpen) openLine();
-    if (ch === '\n') {
+  const writeToken = (token) => {
+    if (!token) return;
+
+    if (token === '\n') {
+      if (!lineOpen) openLine();
       closeLine();
       return;
     }
-    stdout.write(ch);
-    lineLen += 1;
-    if (lineLen >= contentWidth) {
-      closeLine();
+
+    // If the token is longer than the content width, hard-split
+    if (token.length > contentWidth) {
+      let remaining = token;
+      while (remaining.length) {
+        const slice = remaining.slice(0, contentWidth - lineLen);
+        writeToken(slice);
+        remaining = remaining.slice(slice.length);
+      }
+      return;
     }
+
+    if (!lineOpen) openLine();
+    if (lineLen + token.length > contentWidth && lineLen > 0) {
+      closeLine();
+      openLine();
+    }
+
+    stdout.write(token);
+    lineLen += token.length;
   };
 
   const end = () => {
@@ -83,12 +102,12 @@ function createBoxedStreamer(stdout, opts = {}) {
 
   return {
     start: writeTop,
-    writeChar,
+    writeToken,
     end
   };
 }
 
-function createSmoothWriter(writer, { delayMs = 3 } = {}) {
+function createSmoothWriter(writer, { delayMs = 2 } = {}) {
   let pending = Promise.resolve();
 
   const sleep = (ms) => new Promise(res => setTimeout(res, ms));
@@ -96,9 +115,13 @@ function createSmoothWriter(writer, { delayMs = 3 } = {}) {
   const enqueue = (chunk) => {
     if (!chunk) return pending;
     pending = pending.then(async () => {
-      for (const ch of chunk) {
-        writer.writeChar(ch);
-        if (delayMs > 0) await sleep(delayMs);
+      // Split into words and whitespace to avoid mid-word breaks
+      const tokens = chunk.match(/(\s+|[^\s]+)/g) || [];
+      for (const token of tokens) {
+        for (const ch of token) {
+          writer.writeToken(ch);
+          if (delayMs > 0) await sleep(delayMs);
+        }
       }
     });
     return pending;
