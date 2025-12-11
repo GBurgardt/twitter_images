@@ -34,6 +34,81 @@ const DEFAULT_SESSION_LOG = path.join(PROJECT_ROOT, 'current_session.txt');
 // Load .env as fallback
 dotenv.config({ path: path.join(PROJECT_ROOT, '.env'), override: false });
 
+// --- Streaming helpers for nicer CLI output ---
+function createBoxedStreamer(stdout, opts = {}) {
+  const cols = stdout?.columns || 80;
+  const innerWidth = Math.max(40, Math.floor(cols * (opts.widthRatio || 0.7)));
+  const contentWidth = Math.max(10, innerWidth - 2); // leave a space before closing border
+  let lineLen = 0;
+  let lineOpen = false;
+
+  const writeTop = () => {
+    stdout.write(`\n┌${'─'.repeat(innerWidth)}┐\n`);
+  };
+
+  const writeBottom = () => {
+    stdout.write(`└${'─'.repeat(innerWidth)}┘\n`);
+  };
+
+  const openLine = () => {
+    stdout.write('│ ');
+    lineOpen = true;
+    lineLen = 0;
+  };
+
+  const closeLine = () => {
+    const pad = Math.max(0, contentWidth - lineLen);
+    stdout.write(`${' '.repeat(pad)} │\n`);
+    lineOpen = false;
+    lineLen = 0;
+  };
+
+  const writeChar = (ch) => {
+    if (!lineOpen) openLine();
+    if (ch === '\n') {
+      closeLine();
+      return;
+    }
+    stdout.write(ch);
+    lineLen += 1;
+    if (lineLen >= contentWidth) {
+      closeLine();
+    }
+  };
+
+  const end = () => {
+    if (lineOpen) closeLine();
+    writeBottom();
+  };
+
+  return {
+    start: writeTop,
+    writeChar,
+    end
+  };
+}
+
+function createSmoothWriter(writer, { delayMs = 3 } = {}) {
+  let pending = Promise.resolve();
+
+  const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+
+  const enqueue = (chunk) => {
+    if (!chunk) return pending;
+    pending = pending.then(async () => {
+      for (const ch of chunk) {
+        writer.writeChar(ch);
+        if (delayMs > 0) await sleep(delayMs);
+      }
+    });
+    return pending;
+  };
+
+  const flush = () => pending;
+
+  return { enqueue, flush };
+}
+
 // Silence Google SDK message about duplicate API keys
 const originalConsoleWarn = console.warn;
 console.warn = (...args) => {
@@ -727,6 +802,9 @@ async function runInsightAgent({ provider, results, style, styleFile, styleText,
     ui.debug('Agent payload length:', payload.length);
 
     let streamed = false;
+    let boxWriter = null;
+    let smooth = null;
+
     const { agentData, history } = await streamAgent({
       provider: providerKey,
       model,
@@ -736,12 +814,18 @@ async function runInsightAgent({ provider, results, style, styleFile, styleText,
       onStartStreaming: () => {
         streamed = true;
         spin.success('');
-        // Línea en blanco para separarse del spinner
-        if (process.stdout.isTTY) console.log('');
+        boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.7 });
+        boxWriter.start();
+        smooth = createSmoothWriter(boxWriter, { delayMs: 3 });
       },
       onToken: (textChunk) => {
-        // Mostrar solo la porción nueva del <final_response>
-        process.stdout.write(textChunk);
+        if (!textChunk) return;
+        if (!boxWriter) {
+          boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.7 });
+          boxWriter.start();
+          smooth = createSmoothWriter(boxWriter, { delayMs: 3 });
+        }
+        smooth.enqueue(textChunk);
       }
     });
 
@@ -749,7 +833,9 @@ async function runInsightAgent({ provider, results, style, styleFile, styleText,
     if (!streamed) {
       spin.success('');
     } else {
-      if (process.stdout.isTTY) console.log('\n');
+      await smooth.flush();
+      boxWriter.end();
+      if (process.stdout.isTTY) console.log('');
     }
 
     // Adjuntar ruta del prompt para persistencia
@@ -837,27 +923,39 @@ async function startConversationLoop({ results, options, config, conversationHis
       });
 
       let streamed = false;
+      let boxWriter = null;
+      let smooth = null;
       const { agentData, history } = await streamAgent({
         provider: 'gemini', // Chat loop es solo para Gemini
         model: chatModel,
         promptSource,
-      payload,
-      config,
-      history: conversationHistory,
-      onStartStreaming: () => {
-        streamed = true;
-        spin.success('');
-        if (process.stdout.isTTY) console.log('');
-      },
-      onToken: (textChunk) => {
-        process.stdout.write(textChunk);
-      }
-    });
+        payload,
+        config,
+        history: conversationHistory,
+        onStartStreaming: () => {
+          streamed = true;
+          spin.success('');
+          boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.7 });
+          boxWriter.start();
+          smooth = createSmoothWriter(boxWriter, { delayMs: 3 });
+        },
+        onToken: (textChunk) => {
+          if (!textChunk) return;
+          if (!boxWriter) {
+            boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.7 });
+            boxWriter.start();
+            smooth = createSmoothWriter(boxWriter, { delayMs: 3 });
+          }
+          smooth.enqueue(textChunk);
+        }
+      });
 
       if (!streamed) {
         spin.success('');
-      } else if (process.stdout.isTTY) {
-        console.log('\n');
+      } else {
+        await smooth.flush();
+        boxWriter.end();
+        if (process.stdout.isTTY) console.log('');
       }
 
       const cleanResponse = stripXmlTags(agentData.finalResponse || '');
