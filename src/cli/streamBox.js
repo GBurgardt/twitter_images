@@ -1,222 +1,254 @@
 /**
- * Elegant Streaming Box
+ * Streaming Box - Bulletproof Edition
  *
- * A beautiful box component for streaming AI responses.
- * Features smooth character-by-character rendering with
- * proper word wrapping and elegant borders.
+ * REGLAS INVIOLABLES:
+ * 1. NUNCA cortar palabras a mitad
+ * 2. Bordes SIEMPRE alineados
+ * 3. Ancho consistente en TODAS las líneas
+ * 4. Word-wrap por PALABRA, no por carácter
  */
 
 import stringWidth from 'string-width';
-import { style, symbols, ansi, rgb, spacing, gradients } from '../ui/theme.js';
+import wrapAnsi from 'wrap-ansi';
+import { style, symbols, ansi, rgb } from '../ui/theme.js';
 
-// Box characters
+// Box characters - single source of truth
 const BOX = {
-  topLeft: '╭',
-  topRight: '╮',
-  bottomLeft: '╰',
-  bottomRight: '╯',
-  horizontal: '─',
-  vertical: '│',
-  divider: '├',
-  dividerEnd: '┤',
+  tl: '╭', tr: '╮',
+  bl: '╰', br: '╯',
+  h: '─', v: '│',
+  dl: '├', dr: '┤',
 };
 
 /**
- * Create an elegant boxed streamer for AI output
+ * Create a bulletproof streaming box
+ *
+ * Architecture:
+ * ╭──────────────────────────────────────╮  <- top border (boxWidth chars between corners)
+ * │ TITLE                         model │  <- header line
+ * ├──────────────────────────────────────┤  <- divider
+ * │                                      │  <- padding line
+ * │ Content goes here and wraps         │  <- content lines
+ * │ properly at word boundaries.        │
+ * │                                      │  <- padding line
+ * ╰──────────────────────────────────────╯  <- bottom border
+ *
+ * Width math:
+ * - boxWidth = total chars between vertical borders (excluding the │ chars themselves)
+ * - contentWidth = boxWidth - 2 (for the space padding on each side)
  */
 export function createBoxedStreamer(stdout, opts = {}) {
   const cols = stdout?.columns || 80;
   const widthRatio = opts.widthRatio || 0.65;
-  const innerWidth = Math.max(50, Math.min(100, Math.floor(cols * widthRatio)));
-  const contentWidth = innerWidth - 4; // borders + padding
 
-  // Calculate centering margin
-  const marginSize = Math.max(0, Math.floor((cols - innerWidth - 2) / 2));
+  // Calculate dimensions - SINGLE SOURCE OF TRUTH
+  const boxWidth = Math.max(50, Math.min(100, Math.floor(cols * widthRatio)));
+  const contentWidth = boxWidth - 2; // space on each side of content
+
+  // Centering
+  const marginSize = Math.max(0, Math.floor((cols - boxWidth - 2) / 2));
   const margin = ' '.repeat(marginSize);
 
   // Colors
-  const borderColorArr = opts.borderColor || rgb.boxBorder;
-  const textColorArr = opts.textColor || rgb.boxText;
-  const headerColorArr = opts.headerColor || rgb.accent;
-
-  // ANSI codes
-  const borderAnsi = ansi.fg(...borderColorArr);
-  const textAnsi = ansi.fg(...textColorArr);
-  const headerAnsi = ansi.fg(...headerColorArr);
-  const mutedAnsi = ansi.fg(...rgb.secondary); // secondary = muted in simplified palette
+  const borderColor = ansi.fg(...(rgb.boxBorder || [55, 65, 81]));
+  const textColor = ansi.fg(...(rgb.boxText || [229, 231, 235]));
   const reset = ansi.reset;
 
   // State
-  let lineLen = 0;
-  let lineOpen = false;
-  let charBuffer = '';
-  let headerWritten = false;
+  let wordBuffer = '';      // Accumulate chars until whitespace
+  let lineBuffer = '';      // Current line content
+  let lineWidth = 0;        // Visual width of current line
+  let isOpen = false;       // Is a line currently open?
 
-  // Title/model for header
-  const title = opts.title || 'A N A L Y S I S';
+  // Title/model
+  const rawTitle = opts.rawTitle || 'RESPONSE';
   const model = opts.model || '';
 
-  // Write the top border with header
+  // Helper: write a bordered line with exact padding
+  const writeBorderedLine = (content, contentVisualWidth) => {
+    const padding = Math.max(0, contentWidth - contentVisualWidth);
+    stdout.write(`${margin}${borderColor}${BOX.v}${reset} ${content}${' '.repeat(padding)} ${borderColor}${BOX.v}${reset}\n`);
+  };
+
+  // Helper: write horizontal border
+  const writeHorizontal = (left, right) => {
+    stdout.write(`${margin}${borderColor}${left}${BOX.h.repeat(boxWidth)}${right}${reset}\n`);
+  };
+
+  // Write top section
   const writeTop = () => {
     stdout.write('\n');
 
     // Top border
-    stdout.write(`${margin}${borderAnsi}${BOX.topLeft}${BOX.horizontal.repeat(innerWidth)}${BOX.topRight}${reset}\n`);
+    writeHorizontal(BOX.tl, BOX.tr);
 
-    // Header line with title and model
-    const titleStyled = style.header(opts.rawTitle || 'ANALYSIS');
-    const modelStyled = model ? style.muted(model) : '';
-    const titleWidth = stringWidth(opts.rawTitle || 'ANALYSIS');
+    // Header: TITLE                    model
+    const titleStyled = style.primary(rawTitle);
+    const modelStyled = model ? style.secondary(model) : '';
+    const titleWidth = stringWidth(rawTitle);
     const modelWidth = model ? stringWidth(model) : 0;
-    const spaceBetween = innerWidth - 2 - titleWidth - modelWidth;
+    const spaceBetween = Math.max(1, contentWidth - titleWidth - modelWidth);
 
-    stdout.write(`${margin}${borderAnsi}${BOX.vertical}${reset} ${titleStyled}${' '.repeat(Math.max(1, spaceBetween))}${modelStyled} ${borderAnsi}${BOX.vertical}${reset}\n`);
+    const headerContent = `${titleStyled}${' '.repeat(spaceBetween)}${modelStyled}`;
+    writeBorderedLine(headerContent, titleWidth + spaceBetween + modelWidth);
 
-    // Divider after header
-    stdout.write(`${margin}${borderAnsi}${BOX.divider}${BOX.horizontal.repeat(innerWidth)}${BOX.dividerEnd}${reset}\n`);
+    // Divider
+    writeHorizontal(BOX.dl, BOX.dr);
 
-    // Empty line for padding
-    stdout.write(`${margin}${borderAnsi}${BOX.vertical}${reset}${' '.repeat(innerWidth)}${borderAnsi}${BOX.vertical}${reset}\n`);
+    // Padding line
+    writeBorderedLine('', 0);
 
-    headerWritten = true;
+    isOpen = false;
+    lineBuffer = '';
+    lineWidth = 0;
+    wordBuffer = '';
   };
 
-  // Open a new content line
-  const openLine = () => {
-    stdout.write(`${margin}${borderAnsi}${BOX.vertical}${reset} ${textAnsi}`);
-    lineOpen = true;
-    lineLen = 0;
-  };
+  // Flush word buffer to line buffer
+  const flushWord = () => {
+    if (!wordBuffer) return;
 
-  // Close current line with padding
-  const closeLine = () => {
-    const pad = Math.max(0, contentWidth - lineLen);
-    stdout.write(`${reset}${' '.repeat(pad)} ${borderAnsi}${BOX.vertical}${reset}\n`);
-    lineOpen = false;
-    lineLen = 0;
-  };
+    const wordWidth = stringWidth(wordBuffer);
 
-  // Write a single token (character or word)
-  const writeToken = (token) => {
-    if (!token) return;
+    // If word doesn't fit on current line, wrap first
+    if (lineWidth > 0 && lineWidth + wordWidth > contentWidth) {
+      // Write current line and start new one
+      writeBorderedLine(textColor + lineBuffer + reset, lineWidth);
+      lineBuffer = '';
+      lineWidth = 0;
+    }
 
-    // Handle newlines
-    if (token === '\n') {
-      if (!lineOpen) openLine();
-      closeLine();
+    // If single word is longer than content width, force break it
+    if (wordWidth > contentWidth) {
+      // Use wrap-ansi to properly break long words
+      const wrapped = wrapAnsi(wordBuffer, contentWidth, { hard: true, trim: false });
+      const lines = wrapped.split('\n');
+      for (let i = 0; i < lines.length - 1; i++) {
+        const lineW = stringWidth(lines[i]);
+        if (lineWidth > 0) {
+          writeBorderedLine(textColor + lineBuffer + reset, lineWidth);
+          lineBuffer = '';
+          lineWidth = 0;
+        }
+        writeBorderedLine(textColor + lines[i] + reset, lineW);
+      }
+      // Last part goes to buffer
+      wordBuffer = lines[lines.length - 1];
+      const lastWidth = stringWidth(wordBuffer);
+      lineBuffer += wordBuffer;
+      lineWidth += lastWidth;
+      wordBuffer = '';
       return;
     }
 
-    // Handle long tokens by splitting
-    if (stringWidth(token) > contentWidth) {
-      let remaining = token;
-      while (remaining.length > 0) {
-        const maxChars = contentWidth - lineLen;
-        if (maxChars <= 0) {
-          if (lineOpen) closeLine();
-          openLine();
-          continue;
-        }
-        const slice = remaining.slice(0, maxChars);
-        writeToken(slice);
-        remaining = remaining.slice(slice.length);
+    // Add word to line buffer
+    lineBuffer += wordBuffer;
+    lineWidth += wordWidth;
+    wordBuffer = '';
+  };
+
+  // Handle a single character (called during streaming)
+  const writeChar = (char) => {
+    if (!char) return;
+
+    // Newline = flush everything and write line
+    if (char === '\n') {
+      flushWord();
+      if (lineBuffer || lineWidth === 0) {
+        writeBorderedLine(textColor + lineBuffer + reset, lineWidth);
+      }
+      lineBuffer = '';
+      lineWidth = 0;
+      return;
+    }
+
+    // Whitespace = flush word, then add space to line
+    if (/\s/.test(char)) {
+      flushWord();
+      // Only add space if we have content and room
+      if (lineWidth > 0 && lineWidth < contentWidth) {
+        lineBuffer += char;
+        lineWidth += 1;
       }
       return;
     }
 
-    // Open line if needed
-    if (!lineOpen) openLine();
-
-    // Wrap to new line if token doesn't fit
-    const tokenWidth = stringWidth(token);
-    if (lineLen + tokenWidth > contentWidth && lineLen > 0) {
-      closeLine();
-      openLine();
-    }
-
-    // Write the token
-    stdout.write(token);
-    lineLen += tokenWidth;
+    // Regular character = add to word buffer
+    wordBuffer += char;
   };
 
-  // Write the bottom border
+  // Write a complete token (word or whitespace chunk)
+  const writeToken = (token) => {
+    if (!token) return;
+
+    for (const char of token) {
+      writeChar(char);
+    }
+  };
+
+  // Write bottom section
   const writeBottom = (meta = null) => {
-    // Close any open line
-    if (lineOpen) closeLine();
+    // Flush any remaining content
+    flushWord();
+    if (lineBuffer) {
+      writeBorderedLine(textColor + lineBuffer + reset, lineWidth);
+      lineBuffer = '';
+      lineWidth = 0;
+    }
 
-    // Empty line for padding
-    stdout.write(`${margin}${borderAnsi}${BOX.vertical}${reset}${' '.repeat(innerWidth)}${borderAnsi}${BOX.vertical}${reset}\n`);
+    // Padding line
+    writeBorderedLine('', 0);
 
-    // Optional footer with meta info
+    // Optional footer
     if (meta) {
-      stdout.write(`${margin}${borderAnsi}${BOX.divider}${BOX.horizontal.repeat(innerWidth)}${BOX.dividerEnd}${reset}\n`);
-
-      const metaText = `${style.success(symbols.success)} ${style.muted(meta)}`;
-      const metaWidth = stringWidth(meta) + 2; // icon + space + text
-      const metaPad = Math.max(0, innerWidth - 2 - metaWidth);
-
-      stdout.write(`${margin}${borderAnsi}${BOX.vertical}${reset} ${metaText}${' '.repeat(metaPad)} ${borderAnsi}${BOX.vertical}${reset}\n`);
+      writeHorizontal(BOX.dl, BOX.dr);
+      const metaContent = `${style.success(symbols.success)} ${style.secondary(meta)}`;
+      const metaWidth = stringWidth(meta) + 2;
+      writeBorderedLine(metaContent, metaWidth);
     }
 
     // Bottom border
-    stdout.write(`${margin}${borderAnsi}${BOX.bottomLeft}${BOX.horizontal.repeat(innerWidth)}${BOX.bottomRight}${reset}\n`);
+    writeHorizontal(BOX.bl, BOX.br);
     stdout.write('\n');
   };
 
   return {
     start: writeTop,
     writeToken,
-    end: (meta) => writeBottom(meta),
+    writeChar,
+    end: writeBottom,
 
-    // Direct line writing (for non-streamed content)
+    // Write a complete line (non-streamed)
     writeLine: (text) => {
-      if (!lineOpen) openLine();
-      const words = text.split(/(\s+)/);
-      for (const word of words) {
-        writeToken(word);
+      const wrapped = wrapAnsi(text, contentWidth, { hard: true, trim: false });
+      for (const line of wrapped.split('\n')) {
+        writeBorderedLine(textColor + line + reset, stringWidth(line));
       }
-      closeLine();
     },
 
-    // Get dimensions
-    get width() {
-      return contentWidth;
-    },
-    get innerWidth() {
-      return innerWidth;
-    },
+    get width() { return contentWidth; },
+    get boxWidth() { return boxWidth; },
   };
 }
 
 /**
- * Create a smooth writer that buffers and renders tokens with a slight delay
- * for a pleasing streaming effect
+ * Smooth writer - buffers streaming for pleasant display
+ * Now properly handles word boundaries
  */
 export function createSmoothWriter(writer, opts = {}) {
-  const { delayMs = 0, chunkSize = 1 } = opts;
+  const { delayMs = 0 } = opts;
   let pending = Promise.resolve();
 
-  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const enqueue = (chunk) => {
     if (!chunk) return pending;
 
     pending = pending.then(async () => {
-      // Split into tokens (words and whitespace)
-      const tokens = chunk.match(/(\s+|[^\s]+)/g) || [];
-
-      for (const token of tokens) {
-        if (chunkSize === 1) {
-          // Character by character
-          for (const char of token) {
-            writer.writeToken(char);
-            if (delayMs > 0) await sleep(delayMs);
-          }
-        } else {
-          // Chunk mode
-          writer.writeToken(token);
-          if (delayMs > 0) await sleep(delayMs);
-        }
+      // Process character by character, letting writeChar handle word buffering
+      for (const char of chunk) {
+        writer.writeChar(char);
+        if (delayMs > 0) await sleep(delayMs);
       }
     });
 
@@ -228,64 +260,7 @@ export function createSmoothWriter(writer, opts = {}) {
   return { enqueue, flush };
 }
 
-/**
- * Create a thinking indicator that pulses while waiting for response
- */
-export function createThinkingIndicator(stdout, opts = {}) {
-  const cols = stdout?.columns || 80;
-  const widthRatio = opts.widthRatio || 0.65;
-  const innerWidth = Math.max(50, Math.min(100, Math.floor(cols * widthRatio)));
-  const marginSize = Math.max(0, Math.floor((cols - innerWidth - 2) / 2));
-  const margin = ' '.repeat(marginSize);
-
-  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  let frameIndex = 0;
-  let timer = null;
-  let dotCount = 0;
-
-  const borderAnsi = ansi.fg(...rgb.boxBorder);
-  const reset = ansi.reset;
-
-  const render = () => {
-    const frame = style.thinking(frames[frameIndex]);
-    const dots = '.'.repeat(dotCount % 4).padEnd(3);
-    const text = gradients.thinking(`Analyzing${dots}`);
-
-    // Clear line and write
-    stdout.write(`\r${margin}${borderAnsi}${BOX.vertical}${reset} ${frame} ${text}${' '.repeat(innerWidth - 20)}${borderAnsi}${BOX.vertical}${reset}`);
-
-    frameIndex = (frameIndex + 1) % frames.length;
-  };
-
-  return {
-    start() {
-      render();
-      timer = setInterval(() => {
-        render();
-      }, 80);
-
-      // Update dots every 300ms
-      setInterval(() => {
-        dotCount++;
-      }, 300);
-
-      return this;
-    },
-
-    stop() {
-      if (timer) {
-        clearInterval(timer);
-        timer = null;
-      }
-      // Clear the line
-      stdout.write(`\r${' '.repeat(cols)}\r`);
-      return this;
-    },
-  };
-}
-
 export default {
   createBoxedStreamer,
   createSmoothWriter,
-  createThinkingIndicator,
 };
