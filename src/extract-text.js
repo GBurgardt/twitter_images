@@ -127,6 +127,12 @@ async function main() {
     return;
   }
 
+  // Sin argumentos en TTY: abrir biblioteca (misma UX que `twx <url>`)
+  if (!options.inputPath && !options.url && ui.isInteractive()) {
+    await handleListCommand(options);
+    return;
+  }
+
   // Check configuration
   if (!await isConfigured()) {
     await runSetup();
@@ -1769,6 +1775,12 @@ function parseArgs(argv) {
 
     // List/History
     if (arg === 'list' || arg === 'history' || arg === '--list' || arg === '-l') {
+      options.list = true;
+      continue;
+    }
+
+    // Interactive/library alias (legacy)
+    if (arg === '-i' || arg === '--interactive') {
       options.list = true;
       continue;
     }
