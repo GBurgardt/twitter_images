@@ -2,8 +2,7 @@
  * UI Facade
  *
  * Central export point for all UI components.
- * Keep external imports stable while the implementation
- * stays split into small modules.
+ * "Less, but better." — Dieter Rams
  */
 
 // Theme & styling
@@ -18,7 +17,6 @@ export {
   env,
   brandHeader,
   sectionHeader,
-  progressLine,
   statusLine,
   metaLine,
   promptSymbol,

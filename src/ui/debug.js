@@ -73,10 +73,11 @@ export function spinner(message = 'Processing...') {
 
 /**
  * Log functions with elegant styling
+ * Simplified to match our 5-color palette
  */
 export const log = {
   info: (message) => {
-    console.log(`${spacing.indent}${style.info(symbols.info)} ${message}`);
+    console.log(`${spacing.indent}${style.accent(symbols.pointer)} ${message}`);
   },
 
   success: (message) => {
@@ -84,7 +85,7 @@ export const log = {
   },
 
   warning: (message) => {
-    console.log(`${spacing.indent}${style.warning(symbols.warning)} ${message}`);
+    console.log(`${spacing.indent}${style.accent(symbols.pointer)} ${message}`);
   },
 
   error: (message) => {
@@ -100,7 +101,7 @@ export const log = {
   },
 
   muted: (message) => {
-    console.log(`${spacing.indent}${style.muted(message)}`);
+    console.log(`${spacing.indent}${style.secondary(message)}`);
   },
 };
 

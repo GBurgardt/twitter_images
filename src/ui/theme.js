@@ -1,7 +1,7 @@
 /**
- * TWX Design System - "Midnight Ember"
+ * TWX Design System
  *
- * Central theme module that re-exports all design tokens.
+ * "Simplicity is the ultimate sophistication." — Leonardo da Vinci
  */
 
 import figures from 'figures';
@@ -10,31 +10,30 @@ import figures from 'figures';
 export { colors, rgb, style, gradients, ansi } from './colors.js';
 
 // ═══════════════════════════════════════════════════════════════
-// SYMBOLS & ICONS
+// ASCII LOGO
+// ═══════════════════════════════════════════════════════════════
+
+// The signature TWX logo - memorable, with presence
+const ASCII_LOGO = `████████╗██╗    ██╗██╗  ██╗
+╚══██╔══╝██║    ██║╚██╗██╔╝
+   ██║   ██║ █╗ ██║ ╚███╔╝
+   ██║   ██║███╗██║ ██╔██╗
+   ██║   ╚███╔███╔╝██╔╝ ██╗
+   ╚═╝    ╚══╝╚══╝ ╚═╝  ╚═╝`;
+
+// ═══════════════════════════════════════════════════════════════
+// SYMBOLS (essential only)
 // ═══════════════════════════════════════════════════════════════
 
 export const symbols = {
   success: figures.tick,
   error: figures.cross,
-  warning: figures.warning,
-  info: figures.info,
   pointer: figures.pointer,
-  arrowRight: figures.arrowRight,
-  arrowLeft: figures.arrowLeft,
-  arrowUp: figures.arrowUp,
-  arrowDown: figures.arrowDown,
   bullet: figures.bullet,
   circle: figures.circle,
   circleFilled: figures.circleFilled,
-  square: figures.square,
-  squareFilled: '◼',
   star: figures.star,
-  starEmpty: '☆',
-  heart: figures.heart,
-  play: figures.play,
-  spinner: ['◐', '◓', '◑', '◒'],
-  spinnerDots: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
-  spinnerArc: ['◜', '◠', '◝', '◞', '◡', '◟'],
+  spinner: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
   box: {
     topLeft: '╭',
     topRight: '╮',
@@ -42,27 +41,22 @@ export const symbols = {
     bottomRight: '╯',
     horizontal: '─',
     vertical: '│',
-    dTopLeft: '╔',
-    dTopRight: '╗',
-    dBottomLeft: '╚',
-    dBottomRight: '╝',
-    dHorizontal: '═',
-    dVertical: '║',
+    dividerLeft: '├',
+    dividerRight: '┤',
   },
   ellipsis: '…',
   middot: '·',
-  dash: '—',
-  lambda: 'λ',
 };
 
 // ═══════════════════════════════════════════════════════════════
-// SPACING & LAYOUT
+// SPACING & LAYOUT (generous whitespace)
 // ═══════════════════════════════════════════════════════════════
 
 export const spacing = {
   indent: '  ',
   indent2: '    ',
   indent3: '      ',
+  blank: '',
   getWidth: () => process.stdout.columns || 80,
   getContentWidth: (ratio = 0.8) => {
     const cols = process.stdout.columns || 80;
@@ -77,75 +71,82 @@ export const spacing = {
     const margin = Math.max(0, Math.floor((cols - contentWidth) / 2));
     return ' '.repeat(margin);
   },
-  blank: '',
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ENVIRONMENT CHECKS
+// ENVIRONMENT
 // ═══════════════════════════════════════════════════════════════
 
 export const env = {
   noColor: () => Boolean(process.env.NO_COLOR || process.env.TERM === 'dumb'),
   isTTY: () => Boolean(process.stdout.isTTY),
   unicode: () => process.platform !== 'win32' || Boolean(process.env.WT_SESSION),
-  safeSymbols: () => ({
-    success: env.unicode() ? symbols.success : '+',
-    error: env.unicode() ? symbols.error : 'x',
-    warning: env.unicode() ? symbols.warning : '!',
-    bullet: env.unicode() ? symbols.bullet : '*',
-    pointer: env.unicode() ? symbols.pointer : '>',
-  }),
 };
 
 // ═══════════════════════════════════════════════════════════════
-// FORMATTED COMPONENTS (import style and gradients locally to avoid circular deps)
+// FORMATTED COMPONENTS
 // ═══════════════════════════════════════════════════════════════
 
 import { style, gradients } from './colors.js';
 
+/**
+ * The brand header with gradient ASCII logo
+ * Creates a moment of visual impact
+ */
 export function brandHeader() {
-  const logo = gradients.brand('T W X');
-  const underline = style.dim('─────');
-  return `\n${spacing.indent}${logo}\n${spacing.indent}${underline}\n`;
+  const logo = gradients.brand(ASCII_LOGO);
+  const lines = logo.split('\n');
+
+  // Center the logo
+  const termWidth = process.stdout.columns || 80;
+  const logoWidth = 28; // Width of the ASCII art
+  const padding = Math.max(0, Math.floor((termWidth - logoWidth) / 2));
+  const pad = ' '.repeat(padding);
+
+  const centeredLogo = lines.map((line) => pad + line).join('\n');
+
+  // Generous whitespace - let it breathe
+  return `\n\n${centeredLogo}\n\n`;
 }
 
-export function sectionHeader(text, icon = null) {
-  const iconStr = icon ? `${icon} ` : '';
-  return `\n${spacing.indent}${iconStr}${style.header(text)}\n`;
+/**
+ * Simple, clean section header
+ */
+export function sectionHeader(text) {
+  return `\n${spacing.indent}${style.primary(text)}\n`;
 }
 
-export function progressLine(current, total, label = '') {
-  const ratio = Math.min(1, current / total);
-  const width = 20;
-  const filled = Math.round(width * ratio);
-  const empty = width - filled;
-  const bar = style.accent('█'.repeat(filled)) + style.dim('░'.repeat(empty));
-  const percent = style.secondary(`${Math.round(ratio * 100)}%`);
-  const labelStr = label ? style.muted(` ${symbols.middot} ${label}`) : '';
-  return `${bar} ${percent}${labelStr}`;
-}
-
+/**
+ * Status line with icon
+ */
 export function statusLine(status, message) {
   const icons = {
     success: style.success(symbols.success),
     error: style.error(symbols.error),
-    warning: style.warning(symbols.warning),
-    info: style.info(symbols.info),
-    pending: style.muted(symbols.circle),
+    pending: style.secondary(symbols.circle),
     active: style.accent(symbols.circleFilled),
   };
-  const icon = icons[status] || icons.info;
+  const icon = icons[status] || icons.pending;
   return `${spacing.indent}${icon} ${message}`;
 }
 
+/**
+ * Meta information line
+ */
 export function metaLine(text) {
-  return `${spacing.indent}${style.muted(text)}`;
+  return `${spacing.indent}${style.secondary(text)}`;
 }
 
+/**
+ * The prompt symbol
+ */
 export function promptSymbol() {
-  return style.accent('twx›');
+  return style.accent('›');
 }
 
+/**
+ * Relative time formatting
+ */
 export function relativeTime(date) {
   const now = new Date();
   const diff = now - date;
@@ -163,16 +164,25 @@ export function relativeTime(date) {
   return `${day} ${month}`;
 }
 
+/**
+ * Number formatting
+ */
 export function formatNumber(num) {
   return new Intl.NumberFormat('en-US').format(num);
 }
 
+/**
+ * Text truncation
+ */
 export function truncate(text, max) {
   if (!text) return '';
   if (text.length <= max) return text;
   return text.slice(0, max - 1) + symbols.ellipsis;
 }
 
+/**
+ * Text truncation at word boundary
+ */
 export function truncateWords(text, max) {
   if (!text) return '';
   if (text.length <= max) return text;
