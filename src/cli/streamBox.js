@@ -43,7 +43,7 @@ export function createBoxedStreamer(stdout, opts = {}) {
   const borderAnsi = ansi.fg(...borderColorArr);
   const textAnsi = ansi.fg(...textColorArr);
   const headerAnsi = ansi.fg(...headerColorArr);
-  const mutedAnsi = ansi.fg(...rgb.muted);
+  const mutedAnsi = ansi.fg(...rgb.secondary); // secondary = muted in simplified palette
   const reset = ansi.reset;
 
   // State
