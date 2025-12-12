@@ -50,29 +50,42 @@ class StreamingXmlParser {
 
     // Si no estamos dentro de <final_response>, buscar el inicio
     if (!this.inFinalResponse) {
-      const startTag = '<final_response>';
-      const startIndex = this.buffer.indexOf(startTag);
+      const lower = this.buffer.toLowerCase();
+      const startIndex = lower.indexOf('<final_response');
 
       if (startIndex !== -1) {
         this.inFinalResponse = true;
-        // Descartar todo antes de <final_response> y el tag mismo
-        this.buffer = this.buffer.slice(startIndex + startTag.length);
+        // Avanzar hasta el cierre del tag (soporta atributos/espacios)
+        const gt = this.buffer.indexOf('>', startIndex);
+        if (gt === -1) {
+          // Tag partido: mantener cola y esperar más
+          if (this.buffer.length > 120) this.buffer = this.buffer.slice(-120);
+          return null;
+        }
+        // Descartar todo antes de <final_response...> (incluido)
+        this.buffer = this.buffer.slice(gt + 1);
       } else {
         // Mantener solo los últimos caracteres por si el tag viene partido
-        if (this.buffer.length > 50) {
-          this.buffer = this.buffer.slice(-50);
+        if (this.buffer.length > 120) {
+          this.buffer = this.buffer.slice(-120);
         }
         return null;
       }
     }
 
     // Estamos dentro de <final_response>
-    const endTag = '</final_response>';
-    const endIndex = this.buffer.indexOf(endTag);
+    const lowerBuf = this.buffer.toLowerCase();
+    const endIndex = lowerBuf.indexOf('</final_response');
+    const responseEndIndex = lowerBuf.indexOf('</response>');
 
-    if (endIndex !== -1) {
+    const closeIndex =
+      endIndex !== -1 ? endIndex
+        : responseEndIndex !== -1 ? responseEndIndex
+          : -1;
+
+    if (closeIndex !== -1) {
       // Encontramos el cierre
-      const newText = this.buffer.slice(0, endIndex);
+      const newText = this.buffer.slice(0, closeIndex);
       this.extractedText += newText;
       this.complete = true;
       this.buffer = '';
@@ -107,6 +120,36 @@ class StreamingXmlParser {
   isStreaming() {
     return this.inFinalResponse && !this.complete;
   }
+}
+
+function extractResponseBlock(text = '') {
+  if (!text) return '';
+  const lower = text.toLowerCase();
+  const start = lower.indexOf('<response');
+  if (start === -1) return '';
+  const end = lower.lastIndexOf('</response>');
+  if (end === -1) return text.slice(start).trim();
+  return text.slice(start, end + '</response>'.length).trim();
+}
+
+function extractTagLenient(xml = '', tag) {
+  if (!xml) return '';
+  const lower = xml.toLowerCase();
+  const open = `<${tag}`;
+  const openIndex = lower.indexOf(open);
+  if (openIndex === -1) return '';
+  const openEnd = xml.indexOf('>', openIndex);
+  if (openEnd === -1) return '';
+  const closeIndex = lower.indexOf(`</${tag}`, openEnd + 1);
+  if (closeIndex !== -1) return xml.slice(openEnd + 1, closeIndex).trim();
+  const responseClose = lower.lastIndexOf('</response>');
+  const end = responseClose !== -1 ? responseClose : xml.length;
+  return xml.slice(openEnd + 1, end).trim();
+}
+
+function stripKnownXmlTags(text = '') {
+  if (!text) return '';
+  return text.replace(/<\/?(response|title|internal_reflection|action_plan|final_response)\b[^>]*>/gi, '');
 }
 
 /**
@@ -158,6 +201,7 @@ export function useStreamingChat() {
 
     const parser = new StreamingXmlParser();
     let fullAnswer = '';
+    let rawText = '';
     let hasStartedStreaming = false;
     const debug = process.env.DEBUG === 'true';
 
@@ -195,6 +239,7 @@ export function useStreamingChat() {
         abortRef.current = () => stream.controller?.abort();
 
         stream.on('text', (text) => {
+          rawText += text || '';
           const newText = parser.processChunk(text);
 
           // Detectar transición a streaming
@@ -237,7 +282,9 @@ export function useStreamingChat() {
         abortRef.current = () => stream.controller?.abort();
 
         stream.on('response.output_text.delta', (event) => {
-          const newText = parser.processChunk(event?.delta || '');
+          const delta = event?.delta || '';
+          rawText += delta;
+          const newText = parser.processChunk(delta);
 
           if (parser.isStreaming() && !hasStartedStreaming) {
             hasStartedStreaming = true;
@@ -276,6 +323,7 @@ export function useStreamingChat() {
           const text = chunk.text || '';
           if (!text) continue;
 
+          rawText += text;
           const newText = parser.processChunk(text);
 
           // Detectar transición a streaming
@@ -299,6 +347,21 @@ export function useStreamingChat() {
 
       // Asegurar que tenemos el texto completo
       fullAnswer = parser.getFullText();
+
+      // Fallback: si no se extrajo <final_response>, intentar parsear lenient del XML completo
+      if (!fullAnswer && rawText) {
+        const xml = extractResponseBlock(rawText);
+        if (xml) {
+          fullAnswer = extractTagLenient(xml, 'final_response');
+          if (!fullAnswer && !xml.toLowerCase().includes('<final_response')) {
+            fullAnswer = xml.replace(/^<response[^>]*>/i, '').replace(/<\/response>$/i, '').trim();
+          }
+        } else {
+          fullAnswer = rawText.trim();
+        }
+      }
+
+      fullAnswer = stripKnownXmlTags(fullAnswer || '').trim();
       setStreamingText(fullAnswer);
       setIsStreaming(false);
       setIsWaiting(false);

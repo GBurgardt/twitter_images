@@ -24,6 +24,7 @@ import * as ui from './ui.js';
 import * as errors from './errors.js';
 import { saveRun, listRuns, buildAutoTitle, getRunById } from './db.js';
 import { streamAgent } from './agent/streamAgent.js';
+import { estimateOpenAICostUSD, formatUSD } from './cost.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -349,6 +350,8 @@ async function main() {
     // Ejecutar agente IA
     let agentData = null;
     let conversationHistory = [];
+    let agentMeta = null;
+    let costEstimate = null;
 
     if (results.some(r => r.text) && agentAvailable) {
       const agentResult = await runInsightAgent({
@@ -365,12 +368,23 @@ async function main() {
       if (agentResult) {
         agentData = agentResult.agentData;
         conversationHistory = agentResult.history || [];
+        agentMeta = agentResult.meta || null;
+        costEstimate = agentResult.meta?.provider === 'openai'
+          ? estimateOpenAICostUSD({ model: agentResult.meta.model, usage: agentResult.meta.usage })
+          : null;
 
         // Mostrar resultado
         if (agentData?.finalResponse && !agentResult.streamed) {
           ui.showResult(stripXmlTags(agentData.finalResponse), {
             title: agentData.title || null
           });
+        }
+
+        // Mostrar costo/tokens (sutil, solo en TTY)
+        if (process.stdout.isTTY && costEstimate) {
+          const t = costEstimate.tokens;
+          const costText = `${formatUSD(costEstimate.totalUSD)} · in ${t.input}${t.cached_input ? ` (cached ${t.cached_input})` : ''} · out ${t.output}${t.reasoning ? ` (reason ${t.reasoning})` : ''}`;
+          ui.showMetaLine(`cost ${costText}`);
         }
       }
     } else if (results.some(r => r.text) && !agentAvailable) {
@@ -390,11 +404,31 @@ async function main() {
     }
 
     // Save to history
-    await persistRun({ options, config: effectiveConfig, results, agentData, rawMode: false, agentProvider, styleUsed: normalizedStyle });
+    await persistRun({
+      options,
+      config: effectiveConfig,
+      results,
+      agentData,
+      agentMeta,
+      costEstimate,
+      rawMode: false,
+      agentProvider,
+      styleUsed: normalizedStyle
+    });
 
     // Interactive chat mode
-    if (agentProvider === 'gemini' && geminiClient && ui.isInteractive() && agentData?.finalResponse) {
+    const canChat =
+      ui.isInteractive() &&
+      agentData?.finalResponse &&
+      (
+        (agentProvider === 'gemini' && geminiClient) ||
+        (agentProvider === 'openai' && openaiClient) ||
+        (agentProvider === 'claude' && anthropicClient)
+      );
+
+    if (canChat) {
       await startConversationLoop({
+        provider: agentProvider,
         results,
         options,
         config: effectiveConfig,
@@ -876,7 +910,7 @@ async function runInsightAgent({ provider, results, style, styleFile, styleText,
     let boxWriter = null;
     let smooth = null;
 
-    const { agentData, history } = await streamAgent({
+    const { agentData, history, meta } = await streamAgent({
       provider: providerKey,
       model,
       promptSource,
@@ -912,7 +946,7 @@ async function runInsightAgent({ provider, results, style, styleFile, styleText,
     // Adjuntar ruta del prompt para persistencia
     agentData.promptPath = promptPath;
 
-    return { agentData, history, streamed };
+    return { agentData, history, streamed, meta };
 
   } catch (error) {
     spin.error('Error');
@@ -971,14 +1005,34 @@ function buildAgentPayload({ results, styleKey, preset, customStyle, directive }
 
 // ============ CHAT ============
 
-async function startConversationLoop({ results, options, config, conversationHistory, runId = null }) {
+async function startConversationLoop({ provider, results, options, config, conversationHistory, runId = null }) {
   const normalizedStyle = normalizeStyle(options.style) || 'bukowski';
   const promptPath = resolveAgentPromptPath(normalizedStyle);
   const promptSource = await fs.readFile(promptPath, 'utf8');
   const preset = '';
-  const chatModel = (config.agentModel && config.agentModel.toLowerCase().includes('gemini'))
-    ? config.agentModel
-    : 'gemini-3-pro-preview';
+  const providerKey = normalizeProviderName(provider || config.agentProvider || 'openai');
+  const modelRaw = (config.agentModel || '').toString();
+  const modelLower = modelRaw.toLowerCase();
+  const chatModel =
+    providerKey === 'claude'
+      ? (modelLower.includes('claude') ? modelRaw : 'claude-opus-4.5')
+      : providerKey === 'openai'
+        ? ((modelLower.startsWith('gpt-') || (modelLower.startsWith('o') && !modelLower.startsWith('opus'))) ? modelRaw : 'gpt-5.2')
+        : (modelLower.includes('gemini') ? modelRaw : 'gemini-3-pro-preview');
+
+  // Validate API key for provider
+  if (providerKey === 'openai' && !config.openaiApiKey) {
+    errors.warn('Missing OpenAI API key for chat.', { verbose: options.verbose, technical: 'Set OPENAI_API_KEY or run "twx config".' });
+    return;
+  }
+  if (providerKey === 'claude' && !config.anthropicApiKey) {
+    errors.warn('Missing Anthropic/Claude API key for chat.', { verbose: options.verbose, technical: 'Set ANTHROPIC_API_KEY or run "twx config".' });
+    return;
+  }
+  if (providerKey === 'gemini' && !config.geminiApiKey) {
+    errors.warn('Missing Gemini API key for chat.', { verbose: options.verbose, technical: 'Set GEMINI_API_KEY or run "twx config".' });
+    return;
+  }
 
   console.log('');
   ui.clack.log.info('Chat mode. Type question or empty to return.');
@@ -1010,19 +1064,19 @@ async function startConversationLoop({ results, options, config, conversationHis
       ui.debug('Chat stream request:', {
         model: chatModel,
         payloadLength: payload.length,
-        historyLength: conversationHistory.length,
-        historyRoles: conversationHistory.map(h => h.role),
+        historyLength: (conversationHistory || []).length,
+        historyRoles: (conversationHistory || []).map(h => h.role),
         config: maskConfig(config)
       });
 
       try {
         const streamedResult = await streamAgent({
-          provider: 'gemini', // Chat loop es solo para Gemini
+          provider: providerKey,
           model: chatModel,
           promptSource,
           payload,
           config,
-          history: conversationHistory,
+          history: conversationHistory || [],
           onStartStreaming: () => {
             streamed = true;
             spin.success('');
@@ -1043,28 +1097,30 @@ async function startConversationLoop({ results, options, config, conversationHis
         agentData = streamedResult.agentData;
         history = streamedResult.history;
       } catch (err) {
-        // Fallback a no-stream cuando el streaming falla (ej. 500 internos)
+        // Fallback a no-stream cuando el streaming falla (mantener legacy solo para Gemini)
         ui.debug('Chat streaming failed, fallback to non-stream:', err?.message, err?.stack);
         ui.debug('Chat streaming error detail:', {
           error: err,
           model: chatModel,
           payloadLength: payload.length,
-          historyLength: conversationHistory.length,
-          historyRoles: conversationHistory.map(h => h.role),
+          historyLength: (conversationHistory || []).length,
+          historyRoles: (conversationHistory || []).map(h => h.role),
           config: maskConfig(config)
         });
+        if (providerKey !== 'gemini') throw err;
+
         const client = new GoogleGenAI({ apiKey: config.geminiApiKey });
         const userContent = { role: 'user', parts: [{ text: payload }] };
         ui.debug('Chat fallback request:', {
           model: chatModel,
           payloadLength: payload.length,
-          historyLength: conversationHistory.length,
-          historyRoles: conversationHistory.map(h => h.role),
+          historyLength: (conversationHistory || []).length,
+          historyRoles: (conversationHistory || []).map(h => h.role),
           config: maskConfig(config)
         });
         const response = await client.models.generateContent({
           model: chatModel,
-          contents: [...conversationHistory, userContent],
+          contents: [...(conversationHistory || []), userContent],
           systemInstruction: { parts: [{ text: promptPath ? await fs.readFile(promptPath, 'utf8') : '' }] },
           config: {
             maxOutputTokens: config.agentMaxOutputTokens || 64000,
@@ -1093,7 +1149,7 @@ async function startConversationLoop({ results, options, config, conversationHis
           xml,
           promptPath
         };
-        history = [...conversationHistory, userContent, response?.candidates?.[0]?.content].filter(Boolean);
+        history = [...(conversationHistory || []), userContent, response?.candidates?.[0]?.content].filter(Boolean);
       }
 
       if (!streamed) {
@@ -1227,8 +1283,15 @@ async function handleShowCommand(id, options = {}) {
 
     // Chat mode si está disponible
     const config = await loadConfig();
-    const provider = (run.agentProvider || config.agentProvider || 'gemini').toLowerCase();
-    const canChat = ui.isInteractive() && provider === 'gemini' && config.geminiApiKey && (run.finalResponse || run.results?.some(r => r.text));
+    const provider = normalizeProviderName(run.agentProvider || config.agentProvider || 'openai');
+    const canChat =
+      ui.isInteractive() &&
+      (run.finalResponse || run.results?.some(r => r.text)) &&
+      (
+        (provider === 'gemini' && Boolean(config.geminiApiKey)) ||
+        (provider === 'openai' && Boolean(config.openaiApiKey)) ||
+        (provider === 'claude' && Boolean(config.anthropicApiKey))
+      );
 
     if (canChat) {
       // Build conversation history from DB conversations
@@ -1236,18 +1299,31 @@ async function handleShowCommand(id, options = {}) {
 
       // Add original response
       if (run.finalResponse) {
-        conversationHistory.push({ role: 'model', parts: [{ text: run.finalResponse }] });
+        if (provider === 'gemini') {
+          conversationHistory.push({ role: 'model', parts: [{ text: run.finalResponse }] });
+        } else if (provider === 'openai') {
+          conversationHistory.push({ role: 'assistant', content: run.finalResponse });
+        } else {
+          conversationHistory.push({ role: 'assistant', content: run.finalResponse });
+        }
       }
 
       // Add previous conversations from DB
       for (const conv of dbConversations) {
-        conversationHistory.push({ role: 'user', parts: [{ text: conv.question }] });
-        if (conv.answer) {
-          conversationHistory.push({ role: 'model', parts: [{ text: conv.answer }] });
+        if (provider === 'gemini') {
+          conversationHistory.push({ role: 'user', parts: [{ text: conv.question }] });
+          if (conv.answer) conversationHistory.push({ role: 'model', parts: [{ text: conv.answer }] });
+        } else if (provider === 'openai') {
+          conversationHistory.push({ role: 'user', content: conv.question });
+          if (conv.answer) conversationHistory.push({ role: 'assistant', content: conv.answer });
+        } else {
+          conversationHistory.push({ role: 'user', content: conv.question });
+          if (conv.answer) conversationHistory.push({ role: 'assistant', content: conv.answer });
         }
       }
 
       await startConversationLoop({
+        provider,
         results: run.results || [],
         options: { style: run.style, mode: run.mode },
         config,
@@ -1374,7 +1450,7 @@ async function handleTranscriptCommand(options) {
 
 // ============ PERSISTENCE ============
 
-async function persistRun({ options, config, results, agentData, rawMode, agentProvider, styleUsed }) {
+async function persistRun({ options, config, results, agentData, agentMeta = null, costEstimate = null, rawMode, agentProvider, styleUsed }) {
   try {
     const doc = {
       source: { url: options.url || null, path: options.inputPath || null },
@@ -1383,6 +1459,13 @@ async function persistRun({ options, config, results, agentData, rawMode, agentP
       ocrModel: config.ocrModel,
       agentProvider: agentProvider || config.agentProvider,
       agentModel: config.agentModel,
+      ai: {
+        provider: agentMeta?.provider || agentProvider || config.agentProvider,
+        model: agentMeta?.model || config.agentModel,
+        responseId: agentMeta?.responseId || null,
+        usage: agentMeta?.usage || null,
+        costUSD: costEstimate?.totalUSD ?? null
+      },
       whisperModel: config.transcribeModel,
       mediaResolution: config.mediaResolution,
       thinkingLevel: config.thinkingLevel,

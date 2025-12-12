@@ -169,6 +169,9 @@ export async function streamAgent({
   const parser = new StreamingXmlParser();
   let rawText = '';
   let started = false;
+  let openaiUsage = null;
+  let openaiModel = null;
+  let openaiResponseId = null;
 
   const maybeStart = () => {
     if (!started && parser.isStreaming()) {
@@ -247,7 +250,10 @@ export async function streamAgent({
       handleChunk(event?.delta || '');
     });
 
-    await stream.finalResponse();
+    const final = await stream.finalResponse();
+    if (final?.usage) openaiUsage = final.usage;
+    if (final?.model) openaiModel = final.model;
+    if (final?.id) openaiResponseId = final.id;
   } else {
     const client = new GoogleGenAI({ apiKey: config.geminiApiKey });
     const safetySettings = [
@@ -296,6 +302,10 @@ export async function streamAgent({
   if (!finalResponse) finalResponse = parser.getFullText();
   finalResponse = stripKnownXmlTags(finalResponse || '');
 
+  const usage = provider === 'openai' ? openaiUsage : null;
+  const modelUsed = provider === 'openai' ? (openaiModel || model) : model;
+  const responseId = provider === 'openai' ? openaiResponseId : null;
+
   const assistantContent = provider === 'claude'
     ? { role: 'assistant', content: rawXml }
     : provider === 'openai'
@@ -317,6 +327,12 @@ export async function streamAgent({
       title,
       xml,
       promptPath: null // caller may override
+    },
+    meta: {
+      provider,
+      model: modelUsed,
+      responseId,
+      usage
     },
     history: [
       ...history,

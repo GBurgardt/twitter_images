@@ -586,4 +586,12 @@ export function isInteractive() {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
+/**
+ * Mensaje sutil (dim) para metadatos (costos, tokens, etc.)
+ */
+export function showMetaLine(text) {
+  if (!text) return;
+  console.log(`\x1b[2m${text}\x1b[0m`);
+}
+
 export { clack };
