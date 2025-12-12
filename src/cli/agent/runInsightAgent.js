@@ -1,3 +1,9 @@
+/**
+ * Run Insight Agent
+ *
+ * Orchestrates the AI analysis with elegant streaming output.
+ */
+
 import fs from 'node:fs/promises';
 import * as ui from '../../ui.js';
 import * as errors from '../../errors.js';
@@ -23,14 +29,18 @@ export async function runInsightAgent({ provider, results, style, config, direct
 
   const model =
     providerKey === 'claude'
-      ? (configModelLower.includes('claude') ? configModel : defaultClaudeModel)
+      ? configModelLower.includes('claude')
+        ? configModel
+        : defaultClaudeModel
       : providerKey === 'openai'
-        ? (looksLikeOpenAIModel ? configModel : defaultOpenAIModel)
+        ? looksLikeOpenAIModel
+          ? configModel
+          : defaultOpenAIModel
         : configModelLower.includes('gemini')
           ? configModel
           : defaultGeminiModel;
 
-  const spin = ui.spinner('Destilando...');
+  const spin = ui.spinner('Analyzing...');
 
   let payload = '';
 
@@ -40,7 +50,7 @@ export async function runInsightAgent({ provider, results, style, config, direct
       styleKey: normalizedStyle,
       preset: '',
       customStyle: '',
-      directive
+      directive,
     });
 
     ui.debug('Agent payload length:', payload.length);
@@ -59,19 +69,27 @@ export async function runInsightAgent({ provider, results, style, config, direct
       onStartStreaming: () => {
         streamed = true;
         spin.success('');
-        boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.6 });
+        boxWriter = createBoxedStreamer(process.stdout, {
+          widthRatio: 0.65,
+          model: model,
+          rawTitle: 'ANALYSIS',
+        });
         boxWriter.start();
         smooth = createSmoothWriter(boxWriter);
       },
       onToken: (textChunk) => {
         if (!textChunk) return;
         if (!boxWriter) {
-          boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.6 });
+          boxWriter = createBoxedStreamer(process.stdout, {
+            widthRatio: 0.65,
+            model: model,
+            rawTitle: 'ANALYSIS',
+          });
           boxWriter.start();
           smooth = createSmoothWriter(boxWriter);
         }
         smooth.enqueue(textChunk);
-      }
+      },
     });
 
     if (!streamed) {
@@ -88,7 +106,7 @@ export async function runInsightAgent({ provider, results, style, config, direct
       agentData,
       history,
       streamed,
-      meta
+      meta,
     };
   } catch (error) {
     spin.error('Error');
@@ -97,7 +115,7 @@ export async function runInsightAgent({ provider, results, style, config, direct
 
     if (error?.status === 429 || error?.message?.includes('quota')) {
       throw new errors.HumanError('API rate limit reached.', {
-        tip: 'Wait a few minutes before trying again.'
+        tip: 'Wait a few minutes before trying again.',
       });
     }
 

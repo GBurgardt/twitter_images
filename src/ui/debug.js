@@ -1,31 +1,114 @@
-import * as clack from '@clack/prompts';
+/**
+ * Debug & Spinner Module
+ *
+ * Provides elegant logging and spinner functionality.
+ */
 
+import * as clackModule from '@clack/prompts';
+import { createSpinner } from './spinner.js';
+import { style, symbols, spacing } from './theme.js';
+
+// Re-export clack for backward compatibility
+export const clack = clackModule;
+
+// Verbose mode state
 const VERBOSE = { enabled: false };
 
+/**
+ * Enable/disable verbose mode
+ */
 export function setVerbose(enabled) {
   VERBOSE.enabled = Boolean(enabled);
 }
 
-export function debug(...args) {
-  if (VERBOSE.enabled) {
-    console.log('[debug]', ...args);
-  }
-}
-
-export function spinner(message = 'Procesando...') {
-  const s = clack.spinner();
-  s.start(message);
-  return {
-    update: (msg) => s.message(msg),
-    success: (msg) => s.stop(msg || message),
-    error: (msg) => s.stop(msg || 'Error'),
-    stop: () => s.stop()
-  };
-}
-
+/**
+ * Check if verbose mode is enabled
+ */
 export function isVerbose() {
   return VERBOSE.enabled;
 }
 
-export { clack };
+/**
+ * Debug log (only in verbose mode)
+ */
+export function debug(...args) {
+  if (VERBOSE.enabled) {
+    const prefix = style.muted('[debug]');
+    console.log(prefix, ...args);
+  }
+}
 
+/**
+ * Create an elegant spinner
+ */
+export function spinner(message = 'Processing...') {
+  const s = createSpinner({ text: message });
+  s.start();
+
+  return {
+    update: (msg) => {
+      s.update(msg);
+    },
+    success: (msg) => {
+      if (msg) {
+        s.success(msg);
+      } else {
+        s.clear();
+      }
+    },
+    error: (msg) => {
+      s.error(msg || 'Error');
+    },
+    warning: (msg) => {
+      s.warning(msg);
+    },
+    info: (msg) => {
+      s.info(msg);
+    },
+    stop: () => {
+      s.clear();
+    },
+  };
+}
+
+/**
+ * Log functions with elegant styling
+ */
+export const log = {
+  info: (message) => {
+    console.log(`${spacing.indent}${style.info(symbols.info)} ${message}`);
+  },
+
+  success: (message) => {
+    console.log(`${spacing.indent}${style.success(symbols.success)} ${message}`);
+  },
+
+  warning: (message) => {
+    console.log(`${spacing.indent}${style.warning(symbols.warning)} ${message}`);
+  },
+
+  error: (message) => {
+    console.log(`${spacing.indent}${style.error(symbols.error)} ${message}`);
+  },
+
+  message: (message) => {
+    console.log(`${spacing.indent}${message}`);
+  },
+
+  step: (message) => {
+    console.log(`${spacing.indent}${style.accent(symbols.pointer)} ${message}`);
+  },
+
+  muted: (message) => {
+    console.log(`${spacing.indent}${style.muted(message)}`);
+  },
+};
+
+export default {
+  setVerbose,
+  isVerbose,
+  debug,
+  spinner,
+  log,
+  clack,
+};

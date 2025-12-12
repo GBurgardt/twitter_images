@@ -1,3 +1,10 @@
+/**
+ * CLI Chat Session
+ *
+ * Handles the conversational loop with AI.
+ * Features elegant input/output and streaming responses.
+ */
+
 import fs from 'node:fs/promises';
 import { GoogleGenAI } from '@google/genai';
 import * as ui from '../ui.js';
@@ -7,12 +14,7 @@ import { extractResponseBlock, extractTagLenient } from '../agent/xml.js';
 import { createBoxedStreamer, createSmoothWriter } from './streamBox.js';
 
 /**
- * CLI chat session (multiline input, streaming output).
- *
- * Keeps provider logic stable and lets UI evolve independently:
- * - Input UX lives in `ui.chatPrompt`
- * - Output box UX lives in `cli/streamBox`
- * - Provider streaming logic lives in `agent/streamAgent`
+ * Run an interactive chat session
  */
 export async function runCliChatSession({
   provider,
@@ -27,21 +29,24 @@ export async function runCliChatSession({
   buildPayload,
   extractResponseText,
   stripXmlTags,
-  maskConfig
+  maskConfig,
 }) {
   const providerKey = (provider || '').toString().toLowerCase();
 
+  // Show chat header
   console.log('');
-  console.log('  ¿Qué querés saber?');
+  console.log(`  ${ui.style.secondary('What would you like to know?')}`);
+  console.log(`  ${ui.style.dim('(empty line to send, "exit" to quit)')}`);
 
   while (true) {
     const input = await ui.chatPrompt();
 
+    // Check for exit
     if (!input || input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit' || input.toLowerCase() === 'back') {
       break;
     }
 
-    const spin = ui.spinner('Destilando...');
+    const spin = ui.spinner('Thinking...');
 
     try {
       const payload = buildPayload({
@@ -49,7 +54,7 @@ export async function runCliChatSession({
         styleKey: options.styleKey,
         preset: '',
         customStyle: input,
-        directive: options.directive
+        directive: options.directive,
       });
 
       let streamed = false;
@@ -63,8 +68,8 @@ export async function runCliChatSession({
           model,
           payloadLength: payload.length,
           historyLength: (conversationHistory || []).length,
-          historyRoles: (conversationHistory || []).map(h => h.role),
-          config: maskConfig(config)
+          historyRoles: (conversationHistory || []).map((h) => h.role),
+          config: maskConfig(config),
         });
       }
 
@@ -79,24 +84,32 @@ export async function runCliChatSession({
           onStartStreaming: () => {
             streamed = true;
             spin.success('');
-            boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.6 });
+            boxWriter = createBoxedStreamer(process.stdout, {
+              widthRatio: 0.65,
+              model: model,
+              rawTitle: 'RESPONSE',
+            });
             boxWriter.start();
             smooth = createSmoothWriter(boxWriter);
           },
           onToken: (textChunk) => {
             if (!textChunk) return;
             if (!boxWriter) {
-              boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.6 });
+              boxWriter = createBoxedStreamer(process.stdout, {
+                widthRatio: 0.65,
+                model: model,
+                rawTitle: 'RESPONSE',
+              });
               boxWriter.start();
               smooth = createSmoothWriter(boxWriter);
             }
             smooth.enqueue(textChunk);
-          }
+          },
         });
         agentData = streamedResult.agentData;
         history = streamedResult.history;
       } catch (err) {
-        // Legacy fallback: Gemini no-stream request when streaming fails.
+        // Legacy fallback: Gemini non-stream when streaming fails
         if (providerKey !== 'gemini') throw err;
 
         ui.debug('Chat streaming failed, fallback to non-stream:', err?.message, err?.stack);
@@ -112,8 +125,8 @@ export async function runCliChatSession({
             maxOutputTokens: config.agentMaxOutputTokens || 64000,
             temperature: 1,
             thinkingLevel: config.thinkingLevel || 'HIGH',
-            mediaResolution: config.mediaResolution || 'MEDIA_RESOLUTION_HIGH'
-          }
+            mediaResolution: config.mediaResolution || 'MEDIA_RESOLUTION_HIGH',
+          },
         });
 
         spin.success('');
@@ -134,11 +147,12 @@ export async function runCliChatSession({
           finalResponse,
           title: extractTagLenient(xml, 'title'),
           xml,
-          promptPath
+          promptPath,
         };
         history = [...(conversationHistory || []), userContent, response?.candidates?.[0]?.content].filter(Boolean);
       }
 
+      // Finish streaming output
       if (!streamed) {
         spin.success('');
       } else {
@@ -149,9 +163,10 @@ export async function runCliChatSession({
 
       const cleanResponse = stripXmlTags(agentData?.finalResponse || '');
       if (cleanResponse) {
-        if (!streamed) ui.showResult(cleanResponse);
+        if (!streamed) ui.showResult(cleanResponse, { title: 'Response' });
         conversationHistory = history || conversationHistory;
 
+        // Save to database
         if (runId) {
           try {
             const { addConversation } = await import('../db.js');
@@ -164,14 +179,13 @@ export async function runCliChatSession({
       } else {
         ui.debug('Chat no response to show');
       }
-
     } catch (error) {
       spin.error('Error');
       ui.debug('Chat error:', error);
       ui.debug('Chat error detail:', {
         error,
         model,
-        config: maskConfig ? maskConfig(config) : undefined
+        config: maskConfig ? maskConfig(config) : undefined,
       });
 
       if (error?.status === 500) {
@@ -184,4 +198,3 @@ export async function runCliChatSession({
     }
   }
 }
-
