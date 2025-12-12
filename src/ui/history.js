@@ -5,8 +5,8 @@
  * Features beautiful list navigation with visual hierarchy.
  */
 
-import * as clack from '@clack/prompts';
 import Fuse from 'fuse.js';
+import enquirer from 'enquirer';
 import { stripXmlTags } from '../text/stripXmlTags.js';
 import { showResult, showRawResult } from './output.js';
 import {
@@ -19,6 +19,8 @@ import {
   truncateWords,
   brandHeader,
 } from './theme.js';
+
+const { Select, AutoComplete } = enquirer;
 
 /**
  * Show a single history item with elegant formatting
@@ -70,12 +72,10 @@ export function showHistoryItem(run, options = {}) {
  * Show the history list with elegant navigation
  */
 export async function showHistoryList(runs, options = {}) {
-  const { onSelect = null } = options;
-
-  // Show brand header
-  console.log(brandHeader());
+  const { onSelect = null, onToggleFavorite = null } = options;
 
   if (!runs.length) {
+    console.log(brandHeader());
     console.log(`${spacing.indent}${style.muted('Your library is empty.')}`);
     console.log('');
     console.log(`${spacing.indent}${style.secondary('Get started with:')} ${style.accent('twx <url>')}`);
@@ -83,47 +83,125 @@ export async function showHistoryList(runs, options = {}) {
     return null;
   }
 
-  // Sort: favorites first, then by date
-  const sorted = [...runs].sort((a, b) => {
-    if (a.isFavorite && !b.isFavorite) return -1;
-    if (!a.isFavorite && b.isFavorite) return 1;
-    const dateA = new Date(a.updatedAt || a.createdAt);
-    const dateB = new Date(b.updatedAt || b.createdAt);
-    return dateB - dateA;
-  });
+  let favoritesOnly = false;
+  let statusLine = '';
 
-  const MAX_VISIBLE = 10;
-  const hasMore = sorted.length > MAX_VISIBLE;
-  const visible = sorted.slice(0, MAX_VISIBLE);
+  const sorted = sortRuns(runs);
+  const listLimit = getHalfScreenListLimit();
 
-  // Build choices with elegant formatting
-  const choices = visible.map((run) => formatRunChoice(run));
+  while (true) {
+    if (process.stdout.isTTY) console.clear();
+    console.log(brandHeader());
 
-  if (hasMore) {
-    const moreCount = sorted.length - MAX_VISIBLE;
-    choices.push({
-      value: '__search__',
-      label: `${style.accent(symbols.pointer)} ${style.secondary(`Search (${moreCount} more)`)}`,
-      hint: '',
+    const viewRuns = favoritesOnly ? sorted.filter((r) => r.isFavorite) : sorted;
+
+    console.log(`${spacing.indent}${style.header('LIBRARY')}`);
+    console.log('');
+
+    const choices = buildLibraryChoices(viewRuns, { favoritesOnly });
+
+    const prompt = new Select({
+      message: '',
+      choices,
+      // Keep the UI calm: no leading "?" prompt line.
+      prefix: '',
+      separator: '',
+      promptLine: false,
+      rows: process.stdout.rows || 25,
+      columns: process.stdout.columns || 80,
+      limit: listLimit,
+      footer: () => {
+        const hint = `${style.dim('↑↓ Navigate')}  ${style.dim('Enter Open')}  ${style.dim('f Favorite')}  ${style.dim('F Favorites')}  ${style.dim('/ Search')}  ${style.dim('q Quit')}`;
+        return statusLine ? `${hint}\n${spacing.indent}${statusLine}` : hint;
+      },
     });
+
+    const originalKeypress = prompt.keypress.bind(prompt);
+    prompt.keypress = async (input, event = {}) => {
+      // Any keypress clears transient status (unless we set it again).
+      statusLine = '';
+
+      if (input === 'q') {
+        await prompt.cancel();
+        return;
+      }
+
+      if (input === '/') {
+        // Jump to search without moving selection.
+        prompt.index = findChoiceIndex(prompt.choices, '__search__') ?? prompt.index;
+        await prompt.submit();
+        return;
+      }
+
+      if (input === 'F') {
+        prompt.index = findChoiceIndex(prompt.choices, '__toggle_favorites__') ?? prompt.index;
+        await prompt.submit();
+        return;
+      }
+
+      if (input === 'f') {
+        const focused = prompt.focused;
+        const id = focused?.name;
+        const isAction = id?.startsWith?.('__');
+        if (!id || isAction) return;
+
+        if (typeof onToggleFavorite !== 'function') {
+          statusLine = style.warning(`Favorites unavailable`);
+          await prompt.render();
+          return;
+        }
+
+        try {
+          const result = await onToggleFavorite(id);
+          const isFav = Boolean(result?.isFavorite);
+          const run = sorted.find((r) => r._id?.toString?.() === id);
+          if (run) run.isFavorite = isFav;
+
+          // Update the visible choice label in-place
+          const choice = prompt.choices.find((c) => c.name === id);
+          if (choice && run) {
+            const formatted = formatRunChoice(run);
+            choice.message = formatted.label;
+            choice.hint = formatted.hint;
+          }
+
+          statusLine = isFav ? style.success(`Saved to favorites`) : style.muted('Removed from favorites');
+          await prompt.render();
+        } catch (err) {
+          statusLine = style.error(`Could not save favorite`);
+          await prompt.render();
+        }
+        return;
+      }
+
+      return await originalKeypress(input, event);
+    };
+
+    let selected;
+    try {
+      selected = await prompt.run();
+    } catch {
+      return null;
+    }
+
+    if (!selected) return null;
+
+    if (selected === '__toggle_favorites__') {
+      favoritesOnly = !favoritesOnly;
+      console.log('');
+      continue;
+    }
+
+    if (selected === '__search__') {
+      const found = await handleSearchEnquirer(sorted, onSelect);
+      if (found) return found;
+      console.log('');
+      continue;
+    }
+
+    if (onSelect) await onSelect(selected);
+    return selected;
   }
-
-  console.log(`${spacing.indent}${style.header('LIBRARY')}`);
-  console.log('');
-
-  const selected = await clack.select({
-    message: '',
-    options: choices,
-  });
-
-  if (clack.isCancel(selected)) return null;
-
-  if (selected === '__search__') {
-    return await handleSearch(sorted, onSelect);
-  }
-
-  if (onSelect) await onSelect(selected);
-  return selected;
 }
 
 /**
@@ -217,78 +295,173 @@ function extractFirstLine(content) {
 }
 
 /**
- * Handle search flow
+ * Handle search flow (interactive, enquirer)
  */
-async function handleSearch(runs, onSelect) {
+async function handleSearchEnquirer(runs, onSelect) {
   console.log('');
 
-  const query = await clack.text({
+  const baseChoices = runs.map((run) => {
+    const formatted = formatRunChoicePlain(run);
+    return {
+      name: formatted.value,
+      message: formatted.label,
+      hint: formatted.hint,
+      _run: run,
+    };
+  });
+
+  const prompt = new AutoComplete({
     message: `${style.accent(symbols.pointer)} Search`,
-    placeholder: 'Type to filter by title or content...',
+    choices: baseChoices,
+    prefix: '',
+    separator: '',
+    rows: process.stdout.rows || 25,
+    columns: process.stdout.columns || 80,
+    limit: getHalfScreenListLimit(),
+    footer: () => `${style.dim('Type to search')}  ${style.dim('Enter Open')}  ${style.dim('Esc Back')}`,
+    suggest: (input, choices) => {
+      const q = (input || '').trim();
+      if (!q) return choices;
+      const mappedRuns = choices.map((c) => c._run).filter(Boolean);
+      const results = searchRunsFuzzy(mappedRuns, q).slice(0, 30);
+      const byId = new Map(results.map((r) => [r._id.toString(), r]));
+      return choices
+        .filter((c) => byId.has(c.name))
+        .sort((a, b) => results.indexOf(byId.get(a.name)) - results.indexOf(byId.get(b.name)));
+    },
   });
 
-  if (clack.isCancel(query) || !query?.trim()) {
-    return await showHistoryList(runs, { onSelect });
+  try {
+    const selected = await prompt.run();
+    if (!selected) return null;
+    if (onSelect) await onSelect(selected);
+    return selected;
+  } catch {
+    return null;
   }
-
-  const filtered = searchRunsFuzzy(runs, query.trim());
-
-  if (filtered.length === 0) {
-    console.log('');
-    console.log(`${spacing.indent}${style.warning(symbols.warning)} ${style.muted(`No results for "${query}"`)}`);
-    console.log(`${spacing.indent}${style.dim('Try different keywords.')}`);
-    return await handleSearch(runs, onSelect);
-  }
-
-  // Show results
-  console.log('');
-  console.log(`${spacing.indent}${style.success(symbols.success)} ${style.secondary(`${filtered.length} results`)}`);
-  console.log('');
-
-  const choices = filtered.slice(0, 15).map((run) => formatRunChoice(run));
-  choices.push({
-    value: '__back__',
-    label: `${style.muted(symbols.arrowLeft)} ${style.secondary('Back to full list')}`,
-    hint: '',
-  });
-
-  const selected = await clack.select({
-    message: `Results for "${truncate(query, 20)}"`,
-    options: choices,
-  });
-
-  if (clack.isCancel(selected)) return null;
-  if (selected === '__back__') return await showHistoryList(runs, { onSelect });
-  if (onSelect) await onSelect(selected);
-  return selected;
 }
 
 /**
  * Fuzzy search through runs
  */
 function searchRunsFuzzy(runs, query) {
+  const q = normalizeSearchText(query);
   const searchableRuns = runs.map((run) => ({
     ...run,
-    _searchTitle: getSmartTitle(run),
-    _searchContent: run.finalResponse || '',
-    _searchConversations: (run.conversations || [])
-      .map((c) => `${c.question || ''} ${c.answer || ''}`)
-      .join(' '),
+    _searchTitle: normalizeSearchText(getSmartTitle(run)),
+    _searchContent: normalizeSearchText(run.finalResponse || ''),
+    _searchConversationsNorm: normalizeSearchText(
+      (run.conversations || []).map((c) => `${c.question || ''} ${c.answer || ''}`).join(' ')
+    ),
   }));
 
   const fuse = new Fuse(searchableRuns, {
     keys: [
       { name: '_searchTitle', weight: 2 },
       { name: '_searchContent', weight: 1 },
-      { name: '_searchConversations', weight: 0.5 },
+      { name: '_searchConversationsNorm', weight: 0.6 },
     ],
     threshold: 0.4,
     ignoreLocation: true,
     minMatchCharLength: 2,
   });
 
-  const results = fuse.search(query);
+  const results = fuse.search(q);
   return results.map((r) => r.item);
+}
+
+function normalizeSearchText(text) {
+  if (!text) return '';
+  return text
+    .toString()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function sortRuns(runs) {
+  return [...runs].sort((a, b) => {
+    if (a.isFavorite && !b.isFavorite) return -1;
+    if (!a.isFavorite && b.isFavorite) return 1;
+    const dateA = new Date(a.updatedAt || a.createdAt);
+    const dateB = new Date(b.updatedAt || b.createdAt);
+    return dateB - dateA;
+  });
+}
+
+function buildLibraryChoices(runs, { favoritesOnly }) {
+  const choices = [
+    {
+      name: '__search__',
+      message: `${style.accent(symbols.pointer)} ${style.secondary('Search')}`,
+      hint: style.dim('/'),
+    },
+    {
+      name: '__toggle_favorites__',
+      message: `${style.gold(symbols.star)} ${style.secondary(`Favorites only: ${favoritesOnly ? 'On' : 'Off'}`)}`,
+      hint: style.dim('F'),
+    },
+    {
+      name: '__spacer__',
+      message: style.dim(''),
+      disabled: true,
+    },
+  ];
+
+  if (favoritesOnly && runs.length === 0) {
+    choices.push({
+      name: '__empty__',
+      message: style.muted('No favorites yet. Press F to show all.'),
+      disabled: true,
+    });
+    return choices;
+  }
+
+  for (const run of runs) {
+    const formatted = formatRunChoice(run);
+    choices.push({
+      name: formatted.value,
+      message: formatted.label,
+      hint: formatted.hint,
+    });
+  }
+
+  return choices;
+}
+
+function findChoiceIndex(choices, name) {
+  if (!Array.isArray(choices)) return null;
+  const idx = choices.findIndex((c) => c?.name === name);
+  return idx >= 0 ? idx : null;
+}
+
+function getHalfScreenListLimit() {
+  const rows = process.stdout.rows || 24;
+  // Rough budget: brand header (~10) + "LIBRARY" header (2) + footer (2) + breathing room (2)
+  const reserved = 16;
+  const available = Math.max(10, rows - reserved);
+  return Math.max(6, Math.floor(available / 2));
+}
+
+function formatRunChoicePlain(run) {
+  const date = run.updatedAt || run.createdAt
+    ? relativeTime(new Date(run.updatedAt || run.createdAt))
+    : '';
+  const title = getSmartTitle(run);
+  const msgCount = (run.conversations || []).length;
+
+  const favorite = run.isFavorite ? `${symbols.star} ` : '';
+  const chatBadge = msgCount > 0 ? ` (${msgCount})` : '';
+  const titlePlain = truncateWords(title, 60);
+
+  return {
+    value: run._id.toString(),
+    label: `${favorite}${titlePlain}${chatBadge}`,
+    hint: date,
+  };
 }
 
 export default {

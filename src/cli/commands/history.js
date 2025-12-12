@@ -1,7 +1,7 @@
 import { loadConfig } from '../../config.js';
 import * as ui from '../../ui.js';
 import * as errors from '../../errors.js';
-import { listRuns, getRunById } from '../../db.js';
+import { listRuns, getRunById, toggleFavorite } from '../../db.js';
 import { normalizeProviderName } from '../modelSelection.js';
 import { startConversationLoop } from '../startConversationLoop.js';
 import { stripXmlTags } from '../../text/stripXmlTags.js';
@@ -9,8 +9,16 @@ import { stripXmlTags } from '../../text/stripXmlTags.js';
 export async function handleListCommand(options) {
   try {
     while (true) {
-      const runs = await listRuns({ limit: options.listLimit || 100 });
-      const selected = await ui.showHistoryList(runs, {});
+      const limit = options.list
+        ? (options.listLimit || 10)
+        : options.listLimit === 10
+          ? 200
+          : (options.listLimit || 200);
+
+      const runs = await listRuns({ limit });
+      const selected = await ui.showHistoryList(runs, {
+        onToggleFavorite: async (id) => await toggleFavorite(id),
+      });
 
       if (!selected) {
         ui.clack.log.message('Hasta luego.');
@@ -94,4 +102,3 @@ function buildConversationHistory({ provider, run, dbConversations }) {
 
   return history;
 }
-
