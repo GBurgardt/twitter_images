@@ -924,6 +924,7 @@ function buildAgentPayload({ results, styleKey, preset, customStyle, directive }
 
   blocks.push('Idioma obligatorio: español neutro, tono directo y pragmático.');
   blocks.push('IMPORTANTE: Devuelve el XML con TODOS los tags requeridos: <response><title>...</title><internal_reflection>...</internal_reflection><action_plan>...</action_plan><final_response>...</final_response></response>');
+  blocks.push('FORMATO (obligatorio): En <final_response> escribe SOLO texto plano (sin Markdown). Usa párrafos cortos, saltos de línea, y si hace falta listas usa "•" o numeración "1)". Para URLs escribe "URL: https://..." en línea.');
   blocks.push(`Style preset: ${styleKey || 'none'}`);
 
   if (directive?.trim()) {
