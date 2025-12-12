@@ -88,7 +88,7 @@ function InsightList({ insights, selectedIndex, showFavoritesOnly, searchQuery }
         ) : showFavoritesOnly ? (
           <>
             <Text dimColor>No hay favoritos guardados.</Text>
-            <Text dimColor>Presiona F para ver todos los insights.</Text>
+            <Text dimColor>Presiona ^f para ver todos los insights.</Text>
           </>
         ) : (
           <>
@@ -100,8 +100,8 @@ function InsightList({ insights, selectedIndex, showFavoritesOnly, searchQuery }
     );
   }
 
-  // Show max 20 items to avoid clutter
-  const visibleInsights = insights.slice(0, 20);
+  // Show max 12 items - búsqueda es la navegación primaria
+  const visibleInsights = insights.slice(0, 12);
 
   return (
     <Box flexDirection="column">
@@ -110,6 +110,9 @@ function InsightList({ insights, selectedIndex, showFavoritesOnly, searchQuery }
         const isFavorite = insight.isFavorite;
         const title = getDisplayTitle(insight);
         const date = formatDate(insight.updatedAt || insight.createdAt);
+        // Gradiente visual: items lejanos del seleccionado son más dim
+        const distance = Math.abs(index - selectedIndex);
+        const isFar = distance > 4;
 
         return (
           <Box key={insight._id.toString()} paddingX={1}>
@@ -117,12 +120,17 @@ function InsightList({ insights, selectedIndex, showFavoritesOnly, searchQuery }
             <Text color={isSelected ? 'cyan' : 'gray'}>
               {isSelected ? '› ' : '  '}
             </Text>
-            {/* Favorite star */}
-            {isFavorite && <Text color="#FFD700">★ </Text>}
-            {/* Title */}
+            {/* Favorite star - siempre visible en seleccionado (affordance) */}
+            {isSelected ? (
+              <Text color="#FFD700">{isFavorite ? '★ ' : '☆ '}</Text>
+            ) : (
+              isFavorite && <Text color={isFar ? 'gray' : '#FFD700'}>★ </Text>
+            )}
+            {/* Title - con gradiente de visibilidad */}
             <Text
               color={isSelected ? 'white' : undefined}
               bold={isSelected}
+              dimColor={isFar && !isSelected}
             >
               {title.slice(0, 55)}{title.length > 55 ? '…' : ''}
             </Text>
@@ -133,20 +141,39 @@ function InsightList({ insights, selectedIndex, showFavoritesOnly, searchQuery }
           </Box>
         );
       })}
-      {insights.length > 20 && (
+      {insights.length > 12 && (
         <Box paddingX={1}>
-          <Text dimColor>  +{insights.length - 20}</Text>
+          <Text dimColor>  +{insights.length - 12}</Text>
         </Box>
       )}
 
-      {/* Hints sutiles - solo cuando no hay búsqueda activa */}
-      {!searchQuery && (
-        <Box paddingX={1} marginTop={1}>
-          <Text dimColor>^s ★  ^f filtrar  ? ayuda</Text>
-        </Box>
-      )}
+      {/* Hints contextuales - cambian si hay búsqueda */}
+      <Box paddingX={1} marginTop={1}>
+        <Text dimColor>
+          {searchQuery
+            ? 'esc limpiar  ↵ abrir  ? ayuda'
+            : '^s ★  ^f filtrar  escribe buscar  ? ayuda'
+          }
+        </Text>
+      </Box>
     </Box>
   );
+}
+
+/**
+ * Indicador de espera animado (··· que pulsa)
+ */
+function WaitingDots() {
+  const [dots, setDots] = useState(1);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDots(d => d >= 3 ? 1 : d + 1);
+    }, 400);
+    return () => clearInterval(interval);
+  }, []);
+
+  return <Text dimColor>{'·'.repeat(dots)}</Text>;
 }
 
 /**
@@ -177,13 +204,7 @@ function InsightView({ insight, streamingText, isStreaming, isWaiting, streamErr
 
   return (
     <Box flexDirection="column" paddingY={1} paddingX={1}>
-      {/* Title - visible y claro */}
-      <Box marginBottom={1}>
-        {insight.isFavorite && <Text color="#FFD700">★ </Text>}
-        <Text bold>{title}</Text>
-      </Box>
-
-      {/* Main content in papyrus box */}
+      {/* Main content in papyrus box - título incluido */}
       <Box
         flexDirection="column"
         borderStyle="round"
@@ -191,20 +212,23 @@ function InsightView({ insight, streamingText, isStreaming, isWaiting, streamErr
         paddingX={2}
         paddingY={1}
       >
+        {/* Título dentro de la caja para cohesión visual */}
+        <Box marginBottom={1}>
+          {insight.isFavorite && <Text color="#FFD700">★ </Text>}
+          <Text bold color="#C9A66B">{title}</Text>
+        </Box>
         <Markdown>{content || ''}</Markdown>
       </Box>
 
-      {/* Conversations guardadas */}
+      {/* Conversations guardadas - sin separador pesado, solo espacio */}
       {conversations.map((conv, index) => (
-        <Box key={index} flexDirection="column" marginTop={1} paddingX={1}>
-          <Text dimColor>{'─'.repeat(50)}</Text>
-
-          {/* User question */}
-          <Box marginTop={1}>
-            <Text dimColor italic>Tú: {conv.question}</Text>
+        <Box key={index} flexDirection="column" marginTop={2} paddingX={1}>
+          {/* User question - estilo dim sin label */}
+          <Box>
+            <Text dimColor>› {conv.question}</Text>
           </Box>
 
-          {/* Response */}
+          {/* Response - espacio sutil antes */}
           <Box marginTop={1}>
             <Markdown>{conv.answer || ''}</Markdown>
           </Box>
@@ -213,13 +237,11 @@ function InsightView({ insight, streamingText, isStreaming, isWaiting, streamErr
 
       {/* === STREAMING DE NUEVA RESPUESTA === */}
       {(isWaiting || isStreaming || streamingText) && (
-        <Box flexDirection="column" marginTop={1} paddingX={1}>
-          <Text dimColor>{'─'.repeat(50)}</Text>
-
-          {/* Estado: Esperando (antes de <final_response>) */}
+        <Box flexDirection="column" marginTop={2} paddingX={1}>
+          {/* Estado: Esperando (antes de <final_response>) - indicador sutil */}
           {isWaiting && !streamingText && (
-            <Box marginTop={1}>
-              <BlinkingCursor />
+            <Box>
+              <WaitingDots />
             </Box>
           )}
 
@@ -241,6 +263,11 @@ function InsightView({ insight, streamingText, isStreaming, isWaiting, streamErr
           )}
         </Box>
       )}
+
+      {/* Hints contextuales para insight */}
+      <Box paddingX={1} marginTop={1}>
+        <Text dimColor>esc volver  ^s ★  ^y copiar url  ^d borrar</Text>
+      </Box>
     </Box>
   );
 }

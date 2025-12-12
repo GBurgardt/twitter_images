@@ -26,7 +26,7 @@ export default function Input({
 
   return (
     <Box marginTop={1}>
-      <Text dimColor>{placeholder}</Text>
+      {!value && placeholder && <Text dimColor>{placeholder}</Text>}
       <TextInput
         value={value}
         onChange={onChange}

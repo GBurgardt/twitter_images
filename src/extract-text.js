@@ -25,6 +25,9 @@ import * as errors from './errors.js';
 import { saveRun, listRuns, buildAutoTitle, getRunById } from './db.js';
 import { streamAgent } from './agent/streamAgent.js';
 import { estimateOpenAICostUSD, formatUSD } from './cost.js';
+import { createBoxedStreamer, createSmoothWriter } from './cli/streamBox.js';
+import { runCliChatSession } from './cli/chatSession.js';
+import { buildAgentPayload } from './agent/payload.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -35,119 +38,7 @@ const DEFAULT_SESSION_LOG = path.join(PROJECT_ROOT, 'current_session.txt');
 // Load .env as fallback
 dotenv.config({ path: path.join(PROJECT_ROOT, '.env'), override: false });
 
-// --- Streaming helpers for nicer CLI output ---
-const ANSI_RESET = '\x1b[0m';
-
-function createAnsiColor({ fg, bg }) {
-  const parts = [];
-  if (fg) parts.push(`38;2;${fg[0]};${fg[1]};${fg[2]}`);
-  if (bg) parts.push(`48;2;${bg[0]};${bg[1]};${bg[2]}`);
-  if (!parts.length) return '';
-  return `\x1b[${parts.join(';')}m`;
-}
-
-function createBoxedStreamer(stdout, opts = {}) {
-  const cols = stdout?.columns || 80;
-  const innerWidth = Math.max(40, Math.floor(cols * (opts.widthRatio || 0.6)));
-  const contentWidth = Math.max(10, innerWidth - 2); // leave a space before closing border
-  const marginSize = Math.max(0, Math.floor((cols - innerWidth - 2) / 2));
-  const margin = ' '.repeat(marginSize);
-  let lineLen = 0;
-  let lineOpen = false;
-
-  const borderColor = opts.fgColor || [230, 230, 230];
-  const textColorArr = opts.textColor || [240, 240, 240];
-  const bgColor = opts.bgColor || [18, 18, 18]; // dark slate for contrast
-  const borderAnsi = createAnsiColor({ fg: borderColor, bg: bgColor });
-  const textAnsi = createAnsiColor({ fg: textColorArr, bg: bgColor });
-
-  const writeTop = () => {
-    stdout.write(`\n${margin}${borderAnsi}┌${'─'.repeat(innerWidth)}┐${ANSI_RESET}\n`);
-  };
-
-  const writeBottom = () => {
-    stdout.write(`${margin}${borderAnsi}└${'─'.repeat(innerWidth)}┘${ANSI_RESET}\n`);
-  };
-
-  const openLine = () => {
-    stdout.write(`${margin}${borderAnsi}│ ${textAnsi}`);
-    lineOpen = true;
-    lineLen = 0;
-  };
-
-  const closeLine = () => {
-    const pad = Math.max(0, contentWidth - lineLen);
-    stdout.write(`${' '.repeat(pad)} ${borderAnsi}│${ANSI_RESET}\n`);
-    lineOpen = false;
-    lineLen = 0;
-  };
-
-  const writeToken = (token) => {
-    if (!token) return;
-
-    if (token === '\n') {
-      if (!lineOpen) openLine();
-      closeLine();
-      return;
-    }
-
-    // If the token is longer than the content width, hard-split
-    if (token.length > contentWidth) {
-      let remaining = token;
-      while (remaining.length) {
-        const slice = remaining.slice(0, contentWidth - lineLen);
-        writeToken(slice);
-        remaining = remaining.slice(slice.length);
-      }
-      return;
-    }
-
-    if (!lineOpen) openLine();
-    if (lineLen + token.length > contentWidth && lineLen > 0) {
-      closeLine();
-      openLine();
-    }
-
-    stdout.write(token);
-    lineLen += token.length;
-  };
-
-  const end = () => {
-    if (lineOpen) closeLine();
-    writeBottom();
-  };
-
-  return {
-    start: writeTop,
-    writeToken,
-    end
-  };
-}
-
-function createSmoothWriter(writer, { delayMs = 1 } = {}) {
-  let pending = Promise.resolve();
-
-  const sleep = (ms) => new Promise(res => setTimeout(res, ms));
-
-  const enqueue = (chunk) => {
-    if (!chunk) return pending;
-    pending = pending.then(async () => {
-      // Split into words and whitespace to avoid mid-word breaks
-      const tokens = chunk.match(/(\s+|[^\s]+)/g) || [];
-      for (const token of tokens) {
-        for (const ch of token) {
-          writer.writeToken(ch);
-          if (delayMs > 0) await sleep(delayMs);
-        }
-      }
-    });
-    return pending;
-  };
-
-  const flush = () => pending;
-
-  return { enqueue, flush };
-}
+// --- Streaming helpers for nicer CLI output are in `src/cli/streamBox.js` ---
 
 // Silence Google SDK message about duplicate API keys
 const originalConsoleWarn = console.warn;
@@ -283,7 +174,7 @@ async function main() {
         : Boolean(geminiClient);
 
   // Procesar medios
-  const spin = ui.spinner('Analyzing...');
+  const spin = ui.spinner('Leyendo...');
 
   try {
     const { items: mediaItems, cleanup } = await collectMediaItems(options, config);
@@ -343,7 +234,7 @@ async function main() {
       try { await cleanup(); } catch (e) { ui.debug('Cleanup error:', e); }
     }
 
-    spin.success('Done');
+    spin.success('');
 
     const normalizedStyle = normalizeStyle(options.style) || 'bukowski';
 
@@ -403,8 +294,8 @@ async function main() {
       }
     }
 
-    // Save to history
-    await persistRun({
+    // Save to history (needed for chat persistence)
+    const savedRun = await persistRun({
       options,
       config: effectiveConfig,
       results,
@@ -432,7 +323,8 @@ async function main() {
         results,
         options,
         config: effectiveConfig,
-        conversationHistory
+        conversationHistory,
+        runId: savedRun?._id || null
       });
     }
 
@@ -888,7 +780,7 @@ async function runInsightAgent({ provider, results, style, styleFile, styleText,
       ? (looksLikeOpenAIModel ? configModel : defaultOpenAIModel)
       : (configModelLower.includes('gemini') ? configModel : defaultGeminiModel);
 
-  const spin = ui.spinner('Thinking...');
+  const spin = ui.spinner('Destilando...');
 
   let payload = '';
 
@@ -968,40 +860,7 @@ async function runInsightAgent({ provider, results, style, styleFile, styleText,
   }
 }
 
-function buildAgentPayload({ results, styleKey, preset, customStyle, directive }) {
-  const blocks = [];
-
-  blocks.push('Idioma obligatorio: español neutro, tono directo y pragmático.');
-  blocks.push('IMPORTANTE: Devuelve el XML con TODOS los tags requeridos: <response><title>...</title><internal_reflection>...</internal_reflection><action_plan>...</action_plan><final_response>...</final_response></response>');
-  blocks.push('CRÍTICO: Cierra TODOS los tags XML. En particular, SIEMPRE cierra <final_response> con </final_response> y termina con </response>. No puede haber texto después de </response>.');
-  blocks.push('FORMATO (obligatorio): En <final_response> escribe SOLO texto plano (sin Markdown). Usa párrafos cortos, saltos de línea, y si hace falta listas usa "•" o numeración "1)". Para URLs escribe "URL: https://..." en línea.');
-  blocks.push(`Style preset: ${styleKey || 'none'}`);
-
-  if (directive?.trim()) {
-    blocks.push(`Instrucción del usuario (obligatoria, prioritaria):\n${directive.trim()}`);
-  }
-
-  if (preset) blocks.push(`Preset instructions:\n${preset}`);
-  if (customStyle?.trim()) blocks.push(`User custom instructions:\n${customStyle.trim()}`);
-
-  blocks.push(
-    'Materiales analizados:\n' +
-    results.map((entry, i) => {
-      const base = [`Item ${i + 1}`, `Archivo: ${entry.file}`, `Tipo: ${entry.type}`];
-      if (entry.error) {
-        base.push(`Error: ${entry.error}`);
-      } else {
-        base.push(`Texto:\n${entry.text || '[Sin texto]'}`);
-      }
-      if (entry.context) {
-        base.push(`Contexto:\n${entry.context}`);
-      }
-      return base.join('\n');
-    }).join('\n\n')
-  );
-
-  return blocks.join('\n\n');
-}
+// buildAgentPayload moved to `src/agent/payload.js`
 
 // ============ CHAT ============
 
@@ -1009,7 +868,6 @@ async function startConversationLoop({ provider, results, options, config, conve
   const normalizedStyle = normalizeStyle(options.style) || 'bukowski';
   const promptPath = resolveAgentPromptPath(normalizedStyle);
   const promptSource = await fs.readFile(promptPath, 'utf8');
-  const preset = '';
   const providerKey = normalizeProviderName(provider || config.agentProvider || 'openai');
   const modelRaw = (config.agentModel || '').toString();
   const modelLower = modelRaw.toLowerCase();
@@ -1020,7 +878,7 @@ async function startConversationLoop({ provider, results, options, config, conve
         ? ((modelLower.startsWith('gpt-') || (modelLower.startsWith('o') && !modelLower.startsWith('opus'))) ? modelRaw : 'gpt-5.2')
         : (modelLower.includes('gemini') ? modelRaw : 'gemini-3-pro-preview');
 
-  // Validate API key for provider
+  // Provider key validation stays here (friendly error + early return).
   if (providerKey === 'openai' && !config.openaiApiKey) {
     errors.warn('Missing OpenAI API key for chat.', { verbose: options.verbose, technical: 'Set OPENAI_API_KEY or run "twx config".' });
     return;
@@ -1034,172 +892,21 @@ async function startConversationLoop({ provider, results, options, config, conve
     return;
   }
 
-  console.log('');
-  ui.clack.log.info('Chat mode. Type question or empty to return.');
-
-  while (true) {
-    const input = await ui.chatPrompt();
-
-    if (!input || input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit' || input.toLowerCase() === 'back') {
-      break;  // Return to list silently
-    }
-
-    const spin = ui.spinner('Thinking...');
-
-    try {
-      const payload = buildAgentPayload({
-        results,
-        styleKey: normalizedStyle,
-        preset,
-        customStyle: input,
-        directive: options.directive
-      });
-
-      let streamed = false;
-      let boxWriter = null;
-      let smooth = null;
-      let agentData = null;
-      let history = null;
-
-      ui.debug('Chat stream request:', {
-        model: chatModel,
-        payloadLength: payload.length,
-        historyLength: (conversationHistory || []).length,
-        historyRoles: (conversationHistory || []).map(h => h.role),
-        config: maskConfig(config)
-      });
-
-      try {
-        const streamedResult = await streamAgent({
-          provider: providerKey,
-          model: chatModel,
-          promptSource,
-          payload,
-          config,
-          history: conversationHistory || [],
-          onStartStreaming: () => {
-            streamed = true;
-            spin.success('');
-            boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.6 });
-            boxWriter.start();
-            smooth = createSmoothWriter(boxWriter);
-          },
-          onToken: (textChunk) => {
-            if (!textChunk) return;
-            if (!boxWriter) {
-              boxWriter = createBoxedStreamer(process.stdout, { widthRatio: 0.6 });
-              boxWriter.start();
-              smooth = createSmoothWriter(boxWriter);
-            }
-            smooth.enqueue(textChunk);
-          }
-        });
-        agentData = streamedResult.agentData;
-        history = streamedResult.history;
-      } catch (err) {
-        // Fallback a no-stream cuando el streaming falla (mantener legacy solo para Gemini)
-        ui.debug('Chat streaming failed, fallback to non-stream:', err?.message, err?.stack);
-        ui.debug('Chat streaming error detail:', {
-          error: err,
-          model: chatModel,
-          payloadLength: payload.length,
-          historyLength: (conversationHistory || []).length,
-          historyRoles: (conversationHistory || []).map(h => h.role),
-          config: maskConfig(config)
-        });
-        if (providerKey !== 'gemini') throw err;
-
-        const client = new GoogleGenAI({ apiKey: config.geminiApiKey });
-        const userContent = { role: 'user', parts: [{ text: payload }] };
-        ui.debug('Chat fallback request:', {
-          model: chatModel,
-          payloadLength: payload.length,
-          historyLength: (conversationHistory || []).length,
-          historyRoles: (conversationHistory || []).map(h => h.role),
-          config: maskConfig(config)
-        });
-        const response = await client.models.generateContent({
-          model: chatModel,
-          contents: [...(conversationHistory || []), userContent],
-          systemInstruction: { parts: [{ text: promptPath ? await fs.readFile(promptPath, 'utf8') : '' }] },
-          config: {
-            maxOutputTokens: config.agentMaxOutputTokens || 64000,
-            temperature: 1,
-            thinkingLevel: config.thinkingLevel || 'HIGH',
-            mediaResolution: config.mediaResolution || 'MEDIA_RESOLUTION_HIGH'
-          }
-        });
-        spin.success('');
-        const rawXml = extractResponseText(response)?.trim() ?? '';
-        const xml = extractResponseBlock(rawXml);
-        let finalResponse = '';
-        if (xml) {
-          finalResponse = extractTagLenient(xml, 'final_response');
-          if (!finalResponse && !xml.toLowerCase().includes('<final_response')) {
-            finalResponse = xml.replace(/^<response[^>]*>/, '').replace(/<\/response>$/, '').trim();
-          }
-        } else if (rawXml.length > 0) {
-          finalResponse = rawXml;
-        }
-        agentData = {
-          reflection: extractTag(xml, 'internal_reflection'),
-          plan: extractTag(xml, 'action_plan'),
-          finalResponse,
-          title: extractTag(xml, 'title'),
-          xml,
-          promptPath
-        };
-        history = [...(conversationHistory || []), userContent, response?.candidates?.[0]?.content].filter(Boolean);
-      }
-
-      if (!streamed) {
-        spin.success('');
-      } else {
-        await smooth.flush();
-        boxWriter.end();
-        if (process.stdout.isTTY) console.log('');
-      }
-
-      const cleanResponse = stripXmlTags(agentData.finalResponse || '');
-      if (cleanResponse) {
-        if (!streamed) ui.showResult(cleanResponse);
-        conversationHistory = history || conversationHistory;
-
-        if (runId) {
-          try {
-            const { addConversation } = await import('./db.js');
-            await addConversation(runId, input, cleanResponse);
-            ui.debug('Conversation saved to DB');
-          } catch (saveErr) {
-            ui.debug('Failed to save conversation:', saveErr.message);
-          }
-        }
-      } else {
-        ui.debug('Chat no response to show');
-      }
-
-    } catch (error) {
-      spin.error('Error');
-      ui.debug('Chat error:', error);
-      ui.debug('Chat error detail:', {
-        error,
-        model: chatModel,
-        payloadLength: payload.length,
-        historyLength: conversationHistory.length,
-        historyRoles: conversationHistory.map(h => h.role),
-        config: maskConfig(config)
-      });
-
-      // Better error messages for common cases
-      if (error?.status === 500) {
-        errors.warn('Server error. Try again.', { verbose: options.verbose, technical: error.message });
-      } else if (error?.status === 429) {
-        errors.warn('Rate limit. Wait a moment.', { verbose: options.verbose, technical: error.message });
-      } else {
-        errors.warn('Could not respond.', { verbose: options.verbose, technical: error.message });
-      }
-    }
-  }
+  await runCliChatSession({
+    provider: providerKey,
+    model: chatModel,
+    promptPath,
+    promptSource,
+    config,
+    results: results || [],
+    options: { ...options, styleKey: normalizedStyle },
+    conversationHistory: conversationHistory || [],
+    runId,
+    buildPayload: buildAgentPayload,
+    extractResponseText: (resp) => extractResponseText(resp, providerKey),
+    stripXmlTags,
+    maskConfig
+  });
 }
 
 // ============ HISTORY ============
@@ -1386,7 +1093,7 @@ async function handleTranscriptCommand(options) {
   const openaiClient = new OpenAI({ apiKey: config.openaiApiKey });
   const downloadRoot = config.downloadRoot || path.join(os.tmpdir(), 'twx-transcript');
 
-  const spin = ui.spinner('Downloading audio...');
+  const spin = ui.spinner('Capturando audio...');
 
   try {
     // Paso 1: Descargar audio con yt-dlp
@@ -1428,7 +1135,7 @@ async function handleTranscriptCommand(options) {
       config
     });
 
-    spin.success('Done');
+    spin.success('');
 
     // Paso 3: Mostrar transcript crudo
     console.log('\n' + '─'.repeat(60));
@@ -1479,12 +1186,14 @@ async function persistRun({ options, config, results, agentData, agentMeta = nul
       metadata: { rawMode }
     };
 
-    await saveRun(doc);
+    const saved = await saveRun(doc);
     ui.debug('Run persisted');
+    return saved;
 
   } catch (error) {
     ui.debug('Persist error:', error.message);
     // No es fatal, solo debug
+    return null;
   }
 }
 

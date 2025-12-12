@@ -14,6 +14,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../../config.js';
 import { addConversation as dbAddConversation } from '../../db.js';
+import {
+  StreamingFinalResponseParser,
+  extractResponseBlock,
+  extractTagLenient,
+  stripKnownXmlTags
+} from '../../agent/xml.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '../../..');
@@ -22,135 +28,7 @@ const AGENT_PROMPT_BUKOWSKI_PATH = path.join(PROJECT_ROOT, 'prompts/agent_prompt
 /**
  * Parser de XML incremental para extraer <final_response>
  */
-class StreamingXmlParser {
-  constructor() {
-    this.buffer = '';
-    this.inFinalResponse = false;
-    this.extractedText = '';
-    this.complete = false;
-    this.title = '';
-  }
-
-  /**
-   * Procesa un chunk de texto
-   * @returns {string|null} - Nuevo texto para mostrar, o null si nada nuevo
-   */
-  processChunk(chunk) {
-    if (this.complete) return null;
-
-    this.buffer += chunk;
-
-    // Extraer título si aún no lo tenemos
-    if (!this.title) {
-      const titleMatch = this.buffer.match(/<title>([\s\S]*?)<\/title>/);
-      if (titleMatch) {
-        this.title = titleMatch[1].trim();
-      }
-    }
-
-    // Si no estamos dentro de <final_response>, buscar el inicio
-    if (!this.inFinalResponse) {
-      const lower = this.buffer.toLowerCase();
-      const startIndex = lower.indexOf('<final_response');
-
-      if (startIndex !== -1) {
-        this.inFinalResponse = true;
-        // Avanzar hasta el cierre del tag (soporta atributos/espacios)
-        const gt = this.buffer.indexOf('>', startIndex);
-        if (gt === -1) {
-          // Tag partido: mantener cola y esperar más
-          if (this.buffer.length > 120) this.buffer = this.buffer.slice(-120);
-          return null;
-        }
-        // Descartar todo antes de <final_response...> (incluido)
-        this.buffer = this.buffer.slice(gt + 1);
-      } else {
-        // Mantener solo los últimos caracteres por si el tag viene partido
-        if (this.buffer.length > 120) {
-          this.buffer = this.buffer.slice(-120);
-        }
-        return null;
-      }
-    }
-
-    // Estamos dentro de <final_response>
-    const lowerBuf = this.buffer.toLowerCase();
-    const endIndex = lowerBuf.indexOf('</final_response');
-    const responseEndIndex = lowerBuf.indexOf('</response>');
-
-    const closeIndex =
-      endIndex !== -1 ? endIndex
-        : responseEndIndex !== -1 ? responseEndIndex
-          : -1;
-
-    if (closeIndex !== -1) {
-      // Encontramos el cierre
-      const newText = this.buffer.slice(0, closeIndex);
-      this.extractedText += newText;
-      this.complete = true;
-      this.buffer = '';
-      return newText || null;
-    } else {
-      // No hay cierre todavía, emitir lo que tenemos pero guardando
-      // los últimos caracteres por si el tag viene partido
-      const safeLength = Math.max(0, this.buffer.length - 20);
-      const newText = this.buffer.slice(0, safeLength);
-
-      if (newText) {
-        this.extractedText += newText;
-        this.buffer = this.buffer.slice(safeLength);
-        return newText;
-      }
-      return null;
-    }
-  }
-
-  getFullText() {
-    return this.extractedText;
-  }
-
-  getTitle() {
-    return this.title;
-  }
-
-  isComplete() {
-    return this.complete;
-  }
-
-  isStreaming() {
-    return this.inFinalResponse && !this.complete;
-  }
-}
-
-function extractResponseBlock(text = '') {
-  if (!text) return '';
-  const lower = text.toLowerCase();
-  const start = lower.indexOf('<response');
-  if (start === -1) return '';
-  const end = lower.lastIndexOf('</response>');
-  if (end === -1) return text.slice(start).trim();
-  return text.slice(start, end + '</response>'.length).trim();
-}
-
-function extractTagLenient(xml = '', tag) {
-  if (!xml) return '';
-  const lower = xml.toLowerCase();
-  const open = `<${tag}`;
-  const openIndex = lower.indexOf(open);
-  if (openIndex === -1) return '';
-  const openEnd = xml.indexOf('>', openIndex);
-  if (openEnd === -1) return '';
-  const closeIndex = lower.indexOf(`</${tag}`, openEnd + 1);
-  if (closeIndex !== -1) return xml.slice(openEnd + 1, closeIndex).trim();
-  const responseClose = lower.lastIndexOf('</response>');
-  const end = responseClose !== -1 ? responseClose : xml.length;
-  return xml.slice(openEnd + 1, end).trim();
-}
-
-function stripKnownXmlTags(text = '') {
-  if (!text) return '';
-  return text.replace(/<\/?(response|title|internal_reflection|action_plan|final_response)\b[^>]*>/gi, '');
-}
+// XML parsing utilities live in `src/agent/xml.js` (shared with the CLI).
 
 /**
  * Construye el payload para el agente
@@ -199,7 +77,7 @@ export function useStreamingChat() {
     setIsStreaming(false);
     setError(null);
 
-    const parser = new StreamingXmlParser();
+    const parser = new StreamingFinalResponseParser();
     let fullAnswer = '';
     let rawText = '';
     let hasStartedStreaming = false;

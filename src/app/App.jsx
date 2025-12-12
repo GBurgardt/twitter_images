@@ -198,17 +198,12 @@ export default function App() {
     await refresh();
   }, [currentInsight, deleteInsight, refresh]);
 
-  // Handle toggle favorite
+  // Handle toggle favorite - el cambio visual ☆/★ ES el feedback, no necesita hint extra
   const handleToggleFavorite = useCallback(async (insightId = null) => {
     const id = insightId || currentInsight?._id;
     if (!id) return;
-
-    const isFav = await toggleFavorite(id);
-    if (isFav !== null) {
-      const msg = isFav ? '★ Favorito' : '☆ Quitado de favoritos';
-      setHint({ type: 'favorite', text: msg });
-      setTimeout(() => setHint(h => h?.type === 'favorite' ? null : h), 1500);
-    }
+    await toggleFavorite(id);
+    // El ☆/★ en la lista ya muestra el cambio - no hint redundante
   }, [currentInsight, toggleFavorite]);
 
   // Keyboard handling - CTRL+tecla para acciones, tecla sola para búsqueda
@@ -337,10 +332,16 @@ export default function App() {
       {/* Help overlay */}
       {showHelp && <Help />}
 
-      {/* Header minimalista - solo twx */}
+      {/* Header minimalista - twx con breadcrumb en insight */}
       {!showHelp && (
         <Box paddingX={1}>
           <Text bold color="cyan">twx</Text>
+          {isExpanded && currentInsight && (
+            <>
+              <Text dimColor> › </Text>
+              <Text color="white">{getDisplayTitle(currentInsight).slice(0, 35)}{getDisplayTitle(currentInsight).length > 35 ? '…' : ''}</Text>
+            </>
+          )}
           {!isExpanded && showFavoritesOnly && (
             <>
               <Text dimColor> · </Text>
@@ -358,6 +359,7 @@ export default function App() {
             value={inputValue}
             onChange={setInputValue}
             disabled={inputDisabled}
+            placeholder={inputValue ? '' : 'buscar...'}
           />
           {/* URL hint inline */}
           {hint?.type === 'url' && !analyzing && !inputValue && (
@@ -387,15 +389,10 @@ export default function App() {
         </Box>
       )}
 
-      {/* Feedback hints */}
+      {/* Feedback hints - solo para acciones con resultado invisible */}
       {hint?.type === 'copied' && (
         <Box paddingX={1}>
           <Text color="green">✓ {hint.text}</Text>
-        </Box>
-      )}
-      {hint?.type === 'favorite' && (
-        <Box paddingX={1}>
-          <Text color="yellow">{hint.text}</Text>
         </Box>
       )}
 
@@ -421,6 +418,7 @@ export default function App() {
           <Input
             value={inputValue}
             onChange={setInputValue}
+            onSubmit={handleSendQuestion}
             disabled={inputDisabled}
           />
         </Box>
