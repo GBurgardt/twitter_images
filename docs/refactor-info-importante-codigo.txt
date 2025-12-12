@@ -1,0 +1,222 @@
+## PASO 1 — TRIAGE (pacientes críticos)
+
+1. Top 3–5 archivos más grandes (antes del refactor)
+
+- src/extract-text.js (~1954 líneas): hacía todo (CLI, downloaders, OCR, Whisper, agente, historial, chat, utilidades).
+- src/ui.js (~597 líneas): output, historial, búsqueda, chat prompt, utilidades.
+- src/config.js (~407 líneas): defaults, env, IO, setup interactivo, show/reset.
+
+2. Archivos más tocados / “hotspots”
+
+- En la práctica, cuando algo cambiaba en UX/flujo, terminabas tocando extract-text.js + ui.js + config.js.
+- Eso es señal clara de acoplamiento: “cambio una cosa” ⇒ “abro 3 archivos gordos”.
+
+3. Archivos que dan miedo
+
+- src/extract-text.js: mezcla responsabilidades; alta probabilidad de romper algo colateral.
+- src/ui.js: es UI + lógica de “biblioteca” + input multilinea; fácil de introducir regressions.
+- src/config.js: mezcla de IO/env/defaults + wizard; fácil de “arreglar” y romper persistencia.
+
+Prioridad (dolor + frecuencia + riesgo)
+
+1. src/extract-text.js (dolor máximo, riesgo máximo, siempre se toca).
+2. src/ui.js (dolor alto: UX; frecuencia alta).
+3. src/config.js (dolor medio/alto; riesgo medio; se toca cuando tocás modelo/keys).
+
+———
+
+## PASO 2 — REFLEXIÓN DEL PRAGMÁTICO (100+ líneas)
+
+4. Ok, el problema real no es “falta de features”: es acoplamiento.
+5. extract-text.js es un “Dios archivo”: es cómodo hasta que deja de serlo.
+6. Cada vez que toco UX del chat, termino rozando descarga / OCR / agente.
+7. Eso es exactamente lo que te rompe la confianza para iterar: miedo a romper.
+8. La regla de 250 líneas obliga a hacer lo correcto: cortar por responsabilidades.
+9. Pero no quiero reescribir el mundo: quiero extraer módulos y mantener APIs.
+10. Primer objetivo: que el entrypoint sea tonto.
+11. Si el entrypoint es tonto, el resto se testea/razona por partes.
+12. Hoy el entrypoint también “es el producto”. Eso es el problema.
+13. Segunda señal: ui.js hace demasiadas cosas, y además tiene estado global (verbose).
+14. El estado global está bien si está aislado.
+15. En un archivo enorme, el estado global se vuelve trampa.
+16. Tercera señal: config.js mezcla parsing, IO y wizard.
+17. Eso no es malo, pero en 400 líneas sí.
+18. ¿Qué es lo mínimo que mejora 80%? separar en “core config” + “setup”.
+19. En UI, lo mínimo es separar: output vs history vs chat prompt vs debug.
+20. En CLI, lo mínimo es separar: routing de comandos vs implementación.
+21. En “media”, separar: collect (local/remote) vs OCR vs Whisper vs downloaders.
+22. En downloaders, hay sub-responsabilidades claras: gallery-dl, yt-dlp, reddit, thread.
+23. Si no lo separo, cada cambio de host/fallback rompe otra cosa.
+24. Riesgo: al mover funciones, rompo imports y side effects.
+25. Solución: crear “facades” (src/ui.js, src/config.js) que mantengan el contrato.
+26. Así, el resto del código sigue importando lo mismo.
+27. Eso reduce el riesgo del refactor.
+28. También quiero evitar ciclos: collect ↔ download.
+29. El truco: sacar “walk de archivos” a src/media/files.js para que ambos dependan de eso.
+30. En chat, ya había módulos (src/cli/chatSession.js), conviene integrarlos como pieza.
+31. No quiero que chatSession.js conozca todo el CLI: que reciba callbacks y utilidades.
+32. Eso ya estaba bastante bien (inyección de buildPayload, stripXmlTags, etc).
+33. Bien: reutilizar esa decisión.
+34. En agente, streamAgent.js ya centraliza providers y parsing incremental.
+35. Entonces runInsightAgent debe ser solo “UX del streaming” (spinner/box).
+36. Eso es una responsabilidad: UI wrapper para correr el agente.
+37. En historial, la UX que te gusta es la “script UI”, no Ink.
+38. Entonces hay que unificar todo por ahí (ya lo hicimos antes).
+39. Ahora el refactor debe facilitar mejorar esa UX.
+40. Eso significa: UI en módulos chicos para que puedas tocar “una cosa”.
+41. Por ejemplo: querés cambiar el box o el ancho: eso vive en src/ui/output.js o src/cli/streamBox.js.
+42. Querés cambiar la búsqueda/lista: eso vive en src/ui/history.js.
+43. Querés cambiar el input multilinea: src/ui/chat.js.
+44. Querés cambiar el texto de ayuda: src/cli/usage.js.
+45. Querés cambiar el “routing” (qué hace twx sin args): src/cli/run.js.
+46. Querés cambiar downloaders: src/media/download.js y src/media/text/*.
+47. Querés cambiar OCR: src/media/ocr.js.
+48. Querés cambiar Whisper: src/media/transcribe.js.
+49. Querés cambiar qué se persiste: src/cli/persist.js.
+50. Eso es “iterar por partes”.
+51. ¿Qué NO debo tocar? lógica de DB, schema, y streaming agent base (salvo imports).
+52. Porque ahí hay riesgo de romper historial o parsing de respuestas.
+53. También evitar “mejoras” que cambien UX sin pedirlo.
+54. Por ejemplo, no cambiar prompts ni estilos ahora: ya funcionan.
+55. El objetivo es estructura, no reinventar el comportamiento.
+56. Otro riesgo: duplicación de helpers (stripXmlTags, extractResponseText).
+57. Si duplico, en 2 meses arreglás un bug en un lado y el otro queda roto.
+58. Solución: un helper por cosa: src/text/stripXmlTags.js, src/agent/extractResponseText.js.
+59. Con eso, cuando arregles parseo, está en un lugar.
+60. En config, mantener prioridad env > file > defaults.
+61. Mantener wizard igual, solo moverlo.
+62. Mantener rutas de config igual (~/.config/twx/config.json).
+63. En CLI, mantener que twx --help imprima igual.
+64. En CLI, mantener que twx <url> haga stream con box y luego chat mode.
+65. En CLI, mantener que twx sin args abra biblioteca (en TTY).
+66. En no-TTY, no intentar cosas interactivas.
+67. Esto ya estaba implícito con ui.isInteractive().
+68. Criterio de corte: cada archivo <250 líneas.
+69. Si me paso por 7 líneas (como pasó), lo corto sin drama.
+70. Mejor un archivo usage.js que un archivo gigante por “comodidad”.
+71. Segundo criterio: nombres que sean obvios.
+72. src/media/download.js es obvio.
+73. src/media/text/reddit.js es obvio.
+74. src/cli/commands/analyze.js es obvio.
+75. Un dev nuevo puede leer src/cli/run.js y entender el flujo.
+76. Eso es clave: “punto de entrada” claro.
+77. También, si querés mejorar UX, vas directo al módulo UI.
+78. No tocás OCR para cambiar un label del historial.
+79. Ese es el “estado mental” que buscamos.
+80. ¿Qué haría si solo tuviera 1h? separar entrypoint + UI.
+81. Pero con 2h, también separo config y media.
+82. Porque media es donde aparecen bugs raros (hosts, herramientas externas).
+83. Además, media son responsabilidades naturales para módulos.
+84. Esto también facilita pruebas manuales: podés probar solo download.
+85. Aunque no haya tests, el código queda testeable “por lectura”.
+86. Otro detalle: runExternalCommand antes dependía de ui.debug.
+87. Eso acopla system ↔ UI.
+88. Lo mínimo: permitir inyectar debug opcional.
+89. Eso hice en src/system/exec.js.
+90. Mantiene ergonomía: pasás ui.debug.
+91. Pero evita “system sabe UI”.
+92. ¿Perfección? no, pero es mejor.
+93. En downloaders, HumanError se usa para mensajes humanos.
+94. Para no acoplar media/* a errors.js, inyecto HumanError donde vale.
+95. Eso reduce dependencias cruzadas.
+96. En OCR y transcribe, mismo patrón: pasan HumanError y debug.
+97. Así, el módulo es reusable sin arrastrar todo el CLI.
+98. El último 20% sería tests; no hay infraestructura, no lo meto.
+99. Entonces hago smoke checks: imports, --help, límites de líneas.
+100. También chequeo “ningún archivo >250” con un comando.
+101. Si eso pasa, no cumplo tu regla y no sirve.
+102. Ajusto el único que se pasó (args.js) moviendo showUsage.
+103. Ese es el tipo de refactor que vale: mínimo y con resultado claro.
+104. Resultado esperado: podés abrir cualquier archivo y saber qué hace.
+105. Y si querés cambiar UX, no tocás lógica de agente.
+106. Si querés cambiar lógica de agente, no tocás UI.
+107. Ese desacople es lo que te permite iterar rápido.
+108. Si yo vuelvo con resaca, leo src/cli/run.js y listo.
+109. Si algo rompe, el scope de búsqueda es pequeño.
+110. Eso baja el miedo.
+111. Y baja el miedo = más iteración = mejor UX.
+112. Ese era el objetivo.
+113. Fin: pragmático, quirúrgico, sin reescritura innecesaria.
+
+———
+
+## PASO 3 — PLAN DE ATAQUE (lo que ejecuté)
+
+Archivo: src/extract-text.js
+
+- Líneas actuales: 1954 (antes) → 11 (ahora)
+- Responsabilidades actuales: todo → solo entrypoint
+- Problema: acoplamiento extremo
+- Acción: mover implementación a src/cli/*
+- Resultado: entrypoint mínimo, lógica modular
+- Líneas post: 11
+
+Archivo: src/ui.js
+
+- Líneas actuales: 597 (antes) → 11 (ahora, facade)
+- Acción: extraer a src/ui/*.js
+- Resultado: UI separada por partes
+- Post: facade + módulos (history, output, chat, debug, misc)
+
+Archivo: src/config.js
+
+- Líneas actuales: 407 (antes) → 9 (ahora, facade)
+- Acción: extraer a src/config/*.js
+- Resultado: config core vs setup vs env vs IO
+
+———
+
+## PASO 4 — EJECUCIÓN (qué cambió, concreto)
+
+ANTES (estructura)
+
+- src/extract-text.js tenía secciones: MAIN, MEDIA COLLECTION, DOWNLOAD, OCR, TRANSCRIPTION, AGENT, CHAT, HISTORY, TRANSCRIPT, PERSISTENCE,
+  CONTEXT, UTILITIES, ARGS.
+
+DESPUÉS (estructura)
+
+- Entry: src/extract-text.js → llama a src/cli/run.js
+- CLI routing: src/cli/run.js
+- CLI args/help: src/cli/args.js, src/cli/usage.js
+- Comandos: src/cli/commands/analyze.js, src/cli/commands/history.js, src/cli/commands/model.js, src/cli/commands/transcript.js
+- Agente UI wrapper: src/cli/agent/runInsightAgent.js
+- Chat loop: src/cli/startConversationLoop.js + src/cli/chatSession.js
+- Media: src/media/collect.js, src/media/download.js, src/media/ocr.js, src/media/transcribe.js, src/media/context.js, src/media/files.js, src/
+  media/readPlainText.js, src/media/text/*
+- System utils: src/system/exec.js, src/system/fs.js, src/system/maskConfig.js
+- Helpers: src/text/stripXmlTags.js, src/agent/extractResponseText.js
+- Facades estables: src/ui.js, src/config.js
+
+Confirmación de no-ruptura
+
+- --help funciona en src/extract-text.js y bin/twx.js.
+- Imports ESM cargan ok (node --input-type=module -e "import(...)").
+- Chequeo de regla: ningún archivo supera 250 líneas (máximo actual: src/errors.js 241).
+
+———
+
+## PASO 5 — CHECKLIST FINAL
+
+- [x] Ningún archivo nuevo supera 250 líneas.
+- [x] Cada archivo tiene una responsabilidad clara (o facade/contrato).
+- [x] Nombres describen lo que hacen (media/download, ui/history, cli/commands/*).
+- [x] Imports/exports resuelven.
+- [x] Sin duplicación grave (helpers centralizados).
+- [x] Estructura entendible en 5 minutos: empezar por src/cli/run.js.
+
+———
+
+## Respuesta directa a tu pregunta (“¿tiene sentido? ¿es fácil de entender?”)
+
+Sí: ahora podés mejorar UX tocando solo:
+
+- Lista/historial/búsqueda: src/ui/history.js
+- Render/box/meta line: src/ui/output.js
+- Input multilinea del chat: src/ui/chat.js
+- Layout del streaming box: src/cli/streamBox.js
+
+Y la lógica de negocio (descarga/OCR/transcribe/agente/persistencia) está separada para que no la rompas cuando hagas cambios visuales.
+
+Si querés, el próximo paso pragmático es: definir un “contrato UI” mínimo (por ejemplo renderResult, renderHistory, promptChat) y dejarlo
+documentado en src/ui.js para que futuras refactors sean todavía más seguras.
+
