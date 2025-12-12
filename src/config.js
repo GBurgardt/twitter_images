@@ -17,13 +17,14 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 
 // Defaults
 const DEFAULTS = {
-  agentProvider: 'gemini',
+  agentProvider: 'openai',
   mode: 'standard',
   verbose: false,
   keepDownloads: false,
   thinkingLevel: 'HIGH',
   mediaResolution: 'MEDIA_RESOLUTION_HIGH',
-  agentMaxOutputTokens: 64000,
+  agentMaxOutputTokens: 128000,
+  openaiReasoningEffort: 'xhigh',
   whisperSegmentSeconds: 480,
   whisperBitrate: '48k',
   whisperSampleRate: '16000'
@@ -82,8 +83,9 @@ function getEnvValue(key) {
     thinkingLevel: ['GEMINI_THINKING_LEVEL'],
     mediaResolution: ['GEMINI_MEDIA_RESOLUTION'],
     visionModel: ['GEMINI_VISION_MODEL'],
-    agentModel: ['GEMINI_AGENT_MODEL'],
-    agentMaxOutputTokens: ['AGENT_MAX_OUTPUT_TOKENS', 'GEMINI_MAX_OUTPUT_TOKENS', 'CLAUDE_MAX_OUTPUT_TOKENS'],
+    agentModel: ['TWX_AGENT_MODEL', 'OPENAI_AGENT_MODEL', 'GEMINI_AGENT_MODEL'],
+    openaiReasoningEffort: ['TWX_OPENAI_REASONING_EFFORT', 'OPENAI_REASONING_EFFORT'],
+    agentMaxOutputTokens: ['AGENT_MAX_OUTPUT_TOKENS', 'OPENAI_MAX_OUTPUT_TOKENS', 'GEMINI_MAX_OUTPUT_TOKENS', 'CLAUDE_MAX_OUTPUT_TOKENS'],
     transcribeModel: ['OPENAI_TRANSCRIBE_MODEL'],
     ocrModel: ['MISTRAL_OCR_MODEL'],
     mistralOrgId: ['MISTRAL_ORG_ID', 'MISTRAL_ORGANIZATION', 'MISTRAL_ORG']
@@ -138,7 +140,8 @@ export async function loadConfig() {
     thinkingLevel: getEnvValue('thinkingLevel') || fileConfig.thinkingLevel || DEFAULTS.thinkingLevel,
     mediaResolution: getEnvValue('mediaResolution') || fileConfig.mediaResolution || DEFAULTS.mediaResolution,
     visionModel: getEnvValue('visionModel') || fileConfig.visionModel || 'gemini-3-pro-preview',
-    agentModel: getEnvValue('agentModel') || fileConfig.agentModel || 'gemini-3-pro-preview',
+    agentModel: getEnvValue('agentModel') || fileConfig.agentModel || 'gpt-5.2',
+    openaiReasoningEffort: (getEnvValue('openaiReasoningEffort') || fileConfig.openaiReasoningEffort || DEFAULTS.openaiReasoningEffort || 'xhigh').toString().toLowerCase(),
     agentMaxOutputTokens,
     transcribeModel: getEnvValue('transcribeModel') || fileConfig.transcribeModel || 'whisper-1',
     ocrModel: getEnvValue('ocrModel') || fileConfig.ocrModel || 'mistral-ocr-latest',
@@ -200,11 +203,13 @@ export async function getMissingKeys() {
   } else if (!config.anthropicApiKey) {
     missing.push({ key: 'anthropicApiKey', name: 'Anthropic/Claude', required: false, purpose: 'Claude como alternativo' });
   }
+  if (config.agentProvider === 'openai' && !config.openaiApiKey) {
+    missing.push({ key: 'openaiApiKey', name: 'OpenAI', required: true, purpose: 'análisis con IA (proveedor OpenAI)' });
+  } else if (!config.openaiApiKey) {
+    missing.push({ key: 'openaiApiKey', name: 'OpenAI', required: false, purpose: 'OpenAI (alternativo) + transcribir audio/video' });
+  }
   if (!config.redditClientId || !config.redditClientSecret) {
     missing.push({ key: 'redditKeys', name: 'Reddit', required: false, purpose: 'recuperar texto de posts vía PRAW' });
-  }
-  if (!config.openaiApiKey) {
-    missing.push({ key: 'openaiApiKey', name: 'OpenAI', required: false, purpose: 'transcribir audio/video' });
   }
 
   return missing;
@@ -388,6 +393,9 @@ export async function showConfig() {
   console.log('');
   console.log('  Preferences:');
   console.log(`    Agent:    ${config.agentProvider} (${config.agentModel || 'auto'})`);
+  if (config.agentProvider === 'openai') {
+    console.log(`    Reason:   ${config.openaiReasoningEffort || 'xhigh'}`);
+  }
   console.log(`    Max out:  ${config.agentMaxOutputTokens} tokens`);
   console.log(`    Mode:     ${config.mode}`);
   console.log(`    Verbose:  ${config.verbose ? 'yes' : 'no'}`);

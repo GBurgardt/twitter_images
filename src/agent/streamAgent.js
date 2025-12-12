@@ -9,6 +9,7 @@
 
 import { GoogleGenAI } from '@google/genai';
 import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 
 /**
  * Simple XML extractor used across the project
@@ -139,6 +140,31 @@ export async function streamAgent({
     if (newText) onToken(newText);
   };
 
+  const normalizeOpenAIHistory = (items) => {
+    if (!Array.isArray(items)) return [];
+    const normalized = [];
+    for (const item of items) {
+      if (!item) continue;
+      // OpenAI format: { role, content }
+      if (typeof item?.role === 'string' && typeof item?.content === 'string') {
+        const role = item.role === 'model' ? 'assistant' : item.role;
+        if (role === 'user' || role === 'assistant' || role === 'developer' || role === 'system') {
+          normalized.push({ role, content: item.content });
+        }
+        continue;
+      }
+      // Gemini format: { role, parts: [{ text }] }
+      if (typeof item?.role === 'string' && Array.isArray(item?.parts)) {
+        const text = item.parts.map(p => p?.text).filter(Boolean).join('');
+        if (text) {
+          const role = item.role === 'model' ? 'assistant' : item.role;
+          normalized.push({ role: role === 'user' ? 'user' : 'assistant', content: text });
+        }
+      }
+    }
+    return normalized;
+  };
+
   // === Provider specific streaming ===
   if (provider === 'claude') {
     const client = new Anthropic({ apiKey: config.anthropicApiKey });
@@ -151,6 +177,32 @@ export async function streamAgent({
     });
     stream.on('text', handleChunk);
     await stream.finalMessage();
+  } else if (provider === 'openai') {
+    if (!config.openaiApiKey) {
+      throw new Error('Missing OPENAI_API_KEY');
+    }
+    const client = new OpenAI({ apiKey: config.openaiApiKey });
+
+    const openaiHistory = normalizeOpenAIHistory(history);
+    const input = [
+      ...(promptSource ? [{ role: 'developer', content: promptSource }] : []),
+      ...openaiHistory,
+      { role: 'user', content: payload }
+    ];
+
+    const stream = client.responses.stream({
+      model,
+      reasoning: { effort: config.openaiReasoningEffort || 'xhigh' },
+      input,
+      max_output_tokens: config.agentMaxOutputTokens || 128000,
+      temperature: 1
+    });
+
+    stream.on('response.output_text.delta', (event) => {
+      handleChunk(event?.delta || '');
+    });
+
+    await stream.finalResponse();
   } else {
     const client = new GoogleGenAI({ apiKey: config.geminiApiKey });
     const safetySettings = [
@@ -200,12 +252,16 @@ export async function streamAgent({
 
   const assistantContent = provider === 'claude'
     ? { role: 'assistant', content: rawXml }
-    // Gemini expects model role for assistant turns
-    : { role: 'model', parts: [{ text: rawXml }] };
+    : provider === 'openai'
+      ? { role: 'assistant', content: rawXml }
+      // Gemini expects model role for assistant turns
+      : { role: 'model', parts: [{ text: rawXml }] };
 
   const userContent = provider === 'claude'
     ? { role: 'user', content: payload }
-    : { role: 'user', parts: [{ text: payload }] };
+    : provider === 'openai'
+      ? { role: 'user', content: payload }
+      : { role: 'user', parts: [{ text: payload }] };
 
   return {
     agentData: {

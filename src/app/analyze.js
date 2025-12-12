@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI } from '@google/genai';
 import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { listRuns } from '../db.js';
 import { loadConfig } from '../config.js';
 
@@ -69,10 +70,14 @@ export async function askFollowUp(insight, question) {
   const config = await loadConfig();
 
   const providerRaw = (config.agentProvider || 'gemini').toLowerCase();
-  const agentProvider = providerRaw === 'claude' ? 'claude' : 'gemini';
+  const agentProvider =
+    providerRaw === 'claude' || providerRaw === 'opus' ? 'claude'
+      : providerRaw === 'openai' ? 'openai'
+        : 'gemini';
 
   const geminiClient = config.geminiApiKey ? new GoogleGenAI({ apiKey: config.geminiApiKey }) : null;
   const anthropicClient = config.anthropicApiKey ? new Anthropic({ apiKey: config.anthropicApiKey }) : null;
+  const openaiClient = config.openaiApiKey ? new OpenAI({ apiKey: config.openaiApiKey }) : null;
 
   // Build context
   const context = `
@@ -104,6 +109,25 @@ Respond concisely and directly in English.
       .filter(c => c.type === 'text')
       .map(c => c.text)
       .join('\n');
+  } else if (agentProvider === 'openai' && openaiClient) {
+    const modelRaw = (config.agentModel || '').toString();
+    const modelLower = modelRaw.toLowerCase();
+    const model = (modelLower.startsWith('gpt-') || (modelLower.startsWith('o') && !modelLower.startsWith('opus')))
+      ? modelRaw
+      : 'gpt-5.2';
+
+    const response = await openaiClient.responses.create({
+      model,
+      reasoning: { effort: (config.openaiReasoningEffort || 'xhigh').toString().toLowerCase() },
+      input: [
+        { role: 'developer', content: 'You are a concise assistant.' },
+        { role: 'user', content: prompt }
+      ],
+      max_output_tokens: config.agentMaxOutputTokens || 128000,
+      temperature: 1
+    });
+
+    return response.output_text || '';
   } else if (geminiClient) {
     const response = await geminiClient.models.generateContent({
       model: config.agentModel || 'gemini-2.0-flash',

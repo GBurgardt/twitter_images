@@ -255,10 +255,14 @@ async function main() {
 
   // Load config
   const config = await loadConfig();
-  const providerRaw = (config.agentProvider || 'gemini').toLowerCase();
-  const agentProvider = providerRaw === 'claude' ? 'claude' : 'gemini';
+  const overrideSelection = resolveModelSelection(options.modelOverride);
+  const agentProvider = overrideSelection?.provider || normalizeProviderName(config.agentProvider || 'openai');
+  const effectiveConfig = overrideSelection?.model
+    ? { ...config, agentModel: overrideSelection.model }
+    : config;
 
   ui.debug('Config loaded:', { ...config, mistralApiKey: '***', geminiApiKey: '***', anthropicApiKey: '***', openaiApiKey: '***' });
+  if (overrideSelection) ui.debug('Model override:', overrideSelection);
   ui.debug('Options:', options);
 
   // Validate required API keys
@@ -268,11 +272,14 @@ async function main() {
   }
 
   // Inicializar clientes
-  const geminiClient = config.geminiApiKey ? new GoogleGenAI({ apiKey: config.geminiApiKey }) : null;
-  const anthropicClient = config.anthropicApiKey ? new Anthropic({ apiKey: config.anthropicApiKey }) : null;
-  const openaiClient = config.openaiApiKey ? new OpenAI({ apiKey: config.openaiApiKey }) : null;
+  const geminiClient = effectiveConfig.geminiApiKey ? new GoogleGenAI({ apiKey: effectiveConfig.geminiApiKey }) : null;
+  const anthropicClient = effectiveConfig.anthropicApiKey ? new Anthropic({ apiKey: effectiveConfig.anthropicApiKey }) : null;
+  const openaiClient = effectiveConfig.openaiApiKey ? new OpenAI({ apiKey: effectiveConfig.openaiApiKey }) : null;
 
-  const agentAvailable = agentProvider === 'claude' ? Boolean(anthropicClient) : Boolean(geminiClient);
+  const agentAvailable =
+    agentProvider === 'claude' ? Boolean(anthropicClient)
+      : agentProvider === 'openai' ? Boolean(openaiClient)
+        : Boolean(geminiClient);
 
   // Procesar medios
   const spin = ui.spinner('Analyzing...');
@@ -350,8 +357,8 @@ async function main() {
         style: normalizedStyle,
         styleFile: options.styleFile,
         styleText: options.styleText,
-        mode: options.mode || config.mode,
-        config,
+        mode: options.mode || effectiveConfig.mode,
+        config: effectiveConfig,
         directive: options.directive
       });
 
@@ -367,10 +374,13 @@ async function main() {
         }
       }
     } else if (results.some(r => r.text) && !agentAvailable) {
-      const providerName = agentProvider === 'claude' ? 'Anthropic/Claude' : 'Gemini';
+      const providerName =
+        agentProvider === 'claude' ? 'Anthropic/Claude'
+          : agentProvider === 'openai' ? 'OpenAI'
+            : 'Gemini';
       errors.warn(`No ${providerName} key, cannot run AI analysis.`, {
         verbose: options.verbose,
-        technical: `Add the missing API key or switch provider with "twx setmodel <gemini|opus>"`
+        technical: `Add the missing API key or switch provider with "twx setmodel <gemini|opus|gpt-5.2>"`
       });
 
       const combined = results.filter(r => r.text).map(r => r.text).join('\n\n');
@@ -380,14 +390,14 @@ async function main() {
     }
 
     // Save to history
-    await persistRun({ options, config, results, agentData, rawMode: false, agentProvider, styleUsed: normalizedStyle });
+    await persistRun({ options, config: effectiveConfig, results, agentData, rawMode: false, agentProvider, styleUsed: normalizedStyle });
 
     // Interactive chat mode
     if (agentProvider === 'gemini' && geminiClient && ui.isInteractive() && agentData?.finalResponse) {
       await startConversationLoop({
         results,
         options,
-        config,
+        config: effectiveConfig,
         conversationHistory
       });
     }
@@ -829,15 +839,20 @@ async function runInsightAgent({ provider, results, style, styleFile, styleText,
   const promptPath = resolveAgentPromptPath(normalizedStyle);
   const promptSource = await fs.readFile(promptPath, 'utf8');
 
-  const providerKey = provider === 'claude' ? 'claude' : 'gemini';
+  const providerKey = provider === 'claude' ? 'claude' : provider === 'openai' ? 'openai' : 'gemini';
   const preset = '';
   const customStyle = '';
   const defaultGeminiModel = 'gemini-3-pro-preview';
   const defaultClaudeModel = 'claude-opus-4.5';
+  const defaultOpenAIModel = 'gpt-5.2';
   const configModel = (config.agentModel || '').toString();
+  const configModelLower = configModel.toLowerCase();
+  const looksLikeOpenAIModel = configModelLower.startsWith('gpt-') || (configModelLower.startsWith('o') && !configModelLower.startsWith('opus'));
   const model = providerKey === 'claude'
-    ? (configModel.toLowerCase().includes('claude') ? configModel : defaultClaudeModel)
-    : (configModel.toLowerCase().includes('gemini') ? configModel : defaultGeminiModel);
+    ? (configModelLower.includes('claude') ? configModel : defaultClaudeModel)
+    : providerKey === 'openai'
+      ? (looksLikeOpenAIModel ? configModel : defaultOpenAIModel)
+      : (configModelLower.includes('gemini') ? configModel : defaultGeminiModel);
 
   const spin = ui.spinner('Thinking...');
 
@@ -1164,31 +1179,19 @@ async function handleModelCommand(value) {
   const raw = (value || '').trim();
 
   if (!raw) {
-    console.log('\nUsage: twx setmodel <gemini|opus|claude|model-id>\n');
+    console.log('\nUsage: twx setmodel <gemini|opus|gpt-5.2|gpt-5.2-pro|model-id>\n');
     return;
   }
 
-  const normalized = raw.toLowerCase();
-  const presets = {
-    gemini: { provider: 'gemini', model: 'gemini-3-pro-preview' },
-    g3: { provider: 'gemini', model: 'gemini-3-pro-preview' },
-    g3pro: { provider: 'gemini', model: 'gemini-3-pro-preview' },
-    g3max: { provider: 'gemini', model: 'gemini-3-pro-preview' },
-    opus: { provider: 'claude', model: 'claude-opus-4.5' },
-    claude: { provider: 'claude', model: 'claude-opus-4.5' },
-    'claude-opus': { provider: 'claude', model: 'claude-opus-4.5' },
-    'claude-opus-4.5': { provider: 'claude', model: 'claude-opus-4.5' }
-  };
-
-  const preset = presets[normalized] || null;
-  const provider = preset?.provider || (normalized.includes('claude') || normalized.includes('opus') ? 'claude' : 'gemini');
-  const model = preset?.model || raw;
+  const selection = resolveModelSelection(raw);
+  const provider = selection?.provider || normalizeProviderName(raw);
+  const model = selection?.model || raw;
 
   const saved = await saveConfig({ agentProvider: provider, agentModel: model });
 
   if (saved) {
     console.log(`\nAI provider set to ${provider} (model: ${model}).\n`);
-    console.log('Defaults: max output tokens 64000, temperature 1, thinking level HIGH.');
+    console.log('Defaults: max output tokens 128000, temperature 1, OpenAI reasoning effort xhigh (when using OpenAI).');
   } else {
     console.log('\nCould not save the requested model change.\n');
   }
@@ -1772,6 +1775,64 @@ function normalizeStyle(value) {
   return STYLE_ALIASES[key] || (STYLE_PRESETS[key] ? key : null);
 }
 
+function normalizeProviderName(value) {
+  const v = (value || '').toString().trim().toLowerCase();
+  if (!v) return 'openai';
+  if (v === 'opus') return 'claude';
+  if (v === 'claude') return 'claude';
+  if (v === 'anthropic') return 'claude';
+  if (v === 'openai') return 'openai';
+  if (v.startsWith('gpt-') || (v.startsWith('o') && !v.startsWith('opus'))) return 'openai';
+  return 'gemini';
+}
+
+function resolveModelSelection(raw) {
+  const input = (raw || '').toString().trim();
+  if (!input) return null;
+
+  const normalized = input.toLowerCase();
+
+  const presets = {
+    // Gemini
+    gemini: { provider: 'gemini', model: 'gemini-3-pro-preview' },
+    g3: { provider: 'gemini', model: 'gemini-3-pro-preview' },
+    'gemini-3': { provider: 'gemini', model: 'gemini-3-pro-preview' },
+    'gemini-3-pro': { provider: 'gemini', model: 'gemini-3-pro-preview' },
+    'gemini-3-pro-preview': { provider: 'gemini', model: 'gemini-3-pro-preview' },
+
+    // Claude
+    opus: { provider: 'claude', model: 'claude-opus-4.5' },
+    claude: { provider: 'claude', model: 'claude-opus-4.5' },
+    'claude-opus': { provider: 'claude', model: 'claude-opus-4.5' },
+    'claude-opus-4.5': { provider: 'claude', model: 'claude-opus-4.5' },
+
+    // OpenAI / GPT-5.2
+    openai: { provider: 'openai', model: 'gpt-5.2' },
+    gpt: { provider: 'openai', model: 'gpt-5.2' },
+    'gpt-5.2': { provider: 'openai', model: 'gpt-5.2' },
+    'gpt-5.2-pro': { provider: 'openai', model: 'gpt-5.2-pro' },
+    'gpt-5.2-chat-latest': { provider: 'openai', model: 'gpt-5.2-chat-latest' }
+  };
+
+  const preset = presets[normalized];
+  if (preset) return preset;
+
+  // Heuristics: treat explicit model IDs as overrides.
+  if (normalized.startsWith('gpt-') || (normalized.startsWith('o') && !normalized.startsWith('opus'))) {
+    return { provider: 'openai', model: input };
+  }
+  if (normalized.includes('claude') || normalized.includes('opus')) {
+    return { provider: 'claude', model: input };
+  }
+  if (normalized.includes('gemini')) {
+    return { provider: 'gemini', model: input };
+  }
+
+  // Fallback: interpret as provider name.
+  const provider = normalizeProviderName(normalized);
+  return { provider, model: provider === 'openai' ? 'gpt-5.2' : provider === 'claude' ? 'claude-opus-4.5' : 'gemini-3-pro-preview' };
+}
+
 function resolveAgentPromptPath(style) {
   const key = normalizeStyle(style) || 'bukowski';
   if (key === 'bukowski') return AGENT_PROMPT_BUKOWSKI_PATH;
@@ -1855,6 +1916,7 @@ function parseArgs(argv) {
     listLimit: 10,
     modelCommand: false,
     modelValue: null,
+    modelOverride: null,
     showId: null,
     directive: null,
     thread: false,
@@ -1911,6 +1973,7 @@ function parseArgs(argv) {
     // Standard flags
     if (arg === '--path' || arg === '-p') { options.inputPath = argv[++i]; continue; }
     if (arg === '--url' || arg === '-u') { options.url = argv[++i]; continue; }
+    if (arg === '--model') { options.modelOverride = argv[++i] || null; continue; }
     if (arg === '--limit') { options.listLimit = Number(argv[++i]) || 10; continue; }
     if (arg === '--json') { options.json = true; continue; }
     if (arg === '--no-recursive') { options.recursive = false; continue; }
@@ -2009,7 +2072,8 @@ function showUsage() {
     twx <path>                  Analyze local files
     twx list                    Show history
     twx config                  Setup API keys
-    twx setmodel opus           Switch AI provider (gemini|opus|claude)
+    twx setmodel gpt-5.2        Switch AI provider (gpt-5.2|gpt-5.2-pro|gemini|opus)
+    twx <url> --model gemini     One-off override (gemini|gpt-5.2|gpt-5.2-pro|opus)
 
   LIBRARY (twx without arguments)
     ↑↓        Navigate (max 10 shown, favorites first)
@@ -2039,6 +2103,7 @@ function showUsage() {
   OPTIONS
     --clip 0:30-2:00            Video segment
     --thread                    Extract full Twitter thread
+    --model <id>                One-off model/provider override
     --verbose                   Show technical details
 
   EXAMPLES

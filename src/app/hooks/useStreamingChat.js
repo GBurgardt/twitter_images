@@ -8,6 +8,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { GoogleGenAI } from '@google/genai';
 import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -162,7 +163,10 @@ export function useStreamingChat() {
     try {
       const config = await loadConfig();
       const providerRaw = (config.agentProvider || 'gemini').toLowerCase();
-      const agentProvider = providerRaw === 'claude' ? 'claude' : 'gemini';
+      const agentProvider =
+        providerRaw === 'claude' || providerRaw === 'opus' ? 'claude'
+          : providerRaw === 'openai' ? 'openai'
+            : 'gemini';
 
       // Cargar prompt del sistema
       const promptSource = await fs.readFile(AGENT_PROMPT_BUKOWSKI_PATH, 'utf8');
@@ -206,6 +210,47 @@ export function useStreamingChat() {
         });
 
         await stream.finalMessage();
+
+      } else if (agentProvider === 'openai' && config.openaiApiKey) {
+        // === OPENAI STREAMING (Responses API) ===
+        const client = new OpenAI({ apiKey: config.openaiApiKey });
+        const modelRaw = (config.agentModel || '').toString();
+        const modelLower = modelRaw.toLowerCase();
+        const model = (modelLower.startsWith('gpt-') || (modelLower.startsWith('o') && !modelLower.startsWith('opus')))
+          ? modelRaw
+          : 'gpt-5.2';
+
+        if (debug) console.log('[streaming] Using OpenAI model:', model);
+
+        const stream = client.responses.stream({
+          model,
+          reasoning: { effort: (config.openaiReasoningEffort || 'xhigh').toString().toLowerCase() },
+          input: [
+            { role: 'developer', content: promptSource },
+            { role: 'user', content: payload }
+          ],
+          max_output_tokens: config.agentMaxOutputTokens || 128000,
+          temperature: 1
+        });
+
+        abortRef.current = () => stream.controller?.abort();
+
+        stream.on('response.output_text.delta', (event) => {
+          const newText = parser.processChunk(event?.delta || '');
+
+          if (parser.isStreaming() && !hasStartedStreaming) {
+            hasStartedStreaming = true;
+            setIsWaiting(false);
+            setIsStreaming(true);
+          }
+
+          if (newText) {
+            fullAnswer = parser.getFullText();
+            setStreamingText(fullAnswer);
+          }
+        });
+
+        await stream.finalResponse();
 
       } else if (config.geminiApiKey) {
         // === GEMINI STREAMING ===
