@@ -4,6 +4,7 @@ Hard output contract (no excepciones):
 - Devuelve SIEMPRE un único bloque XML con exactamente estos cuatro hijos no vacíos: <title>, <internal_reflection>, <action_plan>, <final_response>.
 - Si falta contexto, igual escribe dentro de cada tag (ej. "Información insuficiente, mejor esfuerzo: …"). Nunca dejes un tag vacío ni omitas un tag.
 - No agregues texto fuera del bloque <response>…</response>.
+- CRÍTICO: CIERRA TODOS LOS TAGS. En particular, SIEMPRE incluye `</final_response>` y luego `</response>`. La salida debe TERMINAR con `</response>` y no puede haber texto después.
 
 Formato de <final_response> (OBLIGATORIO):
 1) Texto plano (sin Markdown).

@@ -939,6 +939,7 @@ function buildAgentPayload({ results, styleKey, preset, customStyle, directive }
 
   blocks.push('Idioma obligatorio: español neutro, tono directo y pragmático.');
   blocks.push('IMPORTANTE: Devuelve el XML con TODOS los tags requeridos: <response><title>...</title><internal_reflection>...</internal_reflection><action_plan>...</action_plan><final_response>...</final_response></response>');
+  blocks.push('CRÍTICO: Cierra TODOS los tags XML. En particular, SIEMPRE cierra <final_response> con </final_response> y termina con </response>. No puede haber texto después de </response>.');
   blocks.push('FORMATO (obligatorio): En <final_response> escribe SOLO texto plano (sin Markdown). Usa párrafos cortos, saltos de línea, y si hace falta listas usa "•" o numeración "1)". Para URLs escribe "URL: https://..." en línea.');
   blocks.push(`Style preset: ${styleKey || 'none'}`);
 
@@ -1077,7 +1078,10 @@ async function startConversationLoop({ results, options, config, conversationHis
         const xml = extractResponseBlock(rawXml);
         let finalResponse = '';
         if (xml) {
-          finalResponse = extractTag(xml, 'final_response') || xml.replace(/^<response[^>]*>/, '').replace(/<\/response>$/, '').trim();
+          finalResponse = extractTagLenient(xml, 'final_response');
+          if (!finalResponse && !xml.toLowerCase().includes('<final_response')) {
+            finalResponse = xml.replace(/^<response[^>]*>/, '').replace(/<\/response>$/, '').trim();
+          }
         } else if (rawXml.length > 0) {
           finalResponse = rawXml;
         }
@@ -1861,9 +1865,11 @@ function extractResponseText(response, provider = 'gemini') {
 
 function extractResponseBlock(text) {
   if (!text) return '';
-  const start = text.indexOf('<response');
-  const end = text.lastIndexOf('</response>');
-  if (start === -1 || end === -1) return '';
+  const lower = text.toLowerCase();
+  const start = lower.indexOf('<response');
+  if (start === -1) return '';
+  const end = lower.lastIndexOf('</response>');
+  if (end === -1) return text.slice(start).trim();
   return text.slice(start, end + '</response>'.length).trim();
 }
 
@@ -1871,6 +1877,24 @@ function extractTag(xml, tag) {
   const pattern = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'i');
   const match = xml.match(pattern);
   return match ? match[1].trim() : '';
+}
+
+function extractTagLenient(xml, tag) {
+  if (!xml) return '';
+  const lower = xml.toLowerCase();
+  const open = `<${tag}`;
+  const openIndex = lower.indexOf(open);
+  if (openIndex === -1) return '';
+  const openEnd = xml.indexOf('>', openIndex);
+  if (openEnd === -1) return '';
+  const closeIndex = lower.indexOf(`</${tag}`, openEnd + 1);
+  if (closeIndex !== -1) {
+    const end = closeIndex;
+    return xml.slice(openEnd + 1, end).trim();
+  }
+  const responseClose = lower.lastIndexOf('</response>');
+  const end = responseClose !== -1 ? responseClose : xml.length;
+  return xml.slice(openEnd + 1, end).trim();
 }
 
 function stripXmlTags(text) {

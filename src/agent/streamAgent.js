@@ -15,8 +15,13 @@ import OpenAI from 'openai';
  * Simple XML extractor used across the project
  */
 export function extractResponseBlock(text = '') {
-  const match = text.match(/<response[\s\S]*?<\/response>/i);
-  return match ? match[0] : '';
+  if (!text) return '';
+  const lower = text.toLowerCase();
+  const start = lower.indexOf('<response');
+  if (start === -1) return '';
+  const end = lower.lastIndexOf('</response>');
+  if (end === -1) return text.slice(start).trim();
+  return text.slice(start, end + '</response>'.length).trim();
 }
 
 export function extractTag(xml = '', tag) {
@@ -24,6 +29,31 @@ export function extractTag(xml = '', tag) {
   const regex = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i');
   const match = xml.match(regex);
   return match ? match[1].trim() : '';
+}
+
+function stripKnownXmlTags(text = '') {
+  if (!text) return '';
+  return text.replace(/<\/?(response|title|internal_reflection|action_plan|final_response)\b[^>]*>/gi, '');
+}
+
+function extractTagLenient(xml = '', tag) {
+  if (!xml) return '';
+  const lower = xml.toLowerCase();
+  const open = `<${tag}`; // allow whitespace/attrs
+  const openIndex = lower.indexOf(open);
+  if (openIndex === -1) return '';
+  const openEnd = xml.indexOf('>', openIndex);
+  if (openEnd === -1) return '';
+  const closeIndex = lower.indexOf(`</${tag}`, openEnd + 1);
+  if (closeIndex !== -1) {
+    const closeEnd = xml.indexOf('>', closeIndex);
+    const end = closeEnd !== -1 ? closeIndex : closeIndex;
+    return xml.slice(openEnd + 1, end).trim();
+  }
+  // Missing close tag: stop at </response> if present, else to end.
+  const responseClose = lower.lastIndexOf('</response>');
+  const end = responseClose !== -1 ? responseClose : xml.length;
+  return xml.slice(openEnd + 1, end).trim();
 }
 
 /**
@@ -49,22 +79,36 @@ class StreamingXmlParser {
     }
 
     if (!this.inFinalResponse) {
-      const startTag = '<final_response>';
-      const startIndex = this.buffer.indexOf(startTag);
+      const lower = this.buffer.toLowerCase();
+      const startIndex = lower.indexOf('<final_response');
       if (startIndex !== -1) {
+        const gt = this.buffer.indexOf('>', startIndex);
+        if (gt === -1) {
+          if (this.buffer.length > 120) this.buffer = this.buffer.slice(-120);
+          return null;
+        }
         this.inFinalResponse = true;
-        this.buffer = this.buffer.slice(startIndex + startTag.length);
+        this.buffer = this.buffer.slice(gt + 1);
       } else {
         // Keep tail to catch split tags
-        if (this.buffer.length > 80) this.buffer = this.buffer.slice(-80);
+        if (this.buffer.length > 120) this.buffer = this.buffer.slice(-120);
         return null;
       }
     }
 
-    const endTag = '</final_response>';
-    const endIndex = this.buffer.indexOf(endTag);
-    if (endIndex !== -1) {
-      const newText = this.buffer.slice(0, endIndex);
+    const lowerBuf = this.buffer.toLowerCase();
+    const endIndex = lowerBuf.indexOf('</final_response');
+    const responseEndIndex = lowerBuf.indexOf('</response>');
+
+    // Prefer explicit </final_response>, but if missing and we hit </response>, end there.
+    const closeIndex =
+      endIndex !== -1 ? endIndex
+        : responseEndIndex !== -1 ? responseEndIndex
+          : -1;
+
+    if (closeIndex !== -1) {
+      const newTextRaw = this.buffer.slice(0, closeIndex);
+      const newText = stripKnownXmlTags(newTextRaw);
       this.extractedText += newText;
       this.complete = true;
       this.buffer = '';
@@ -73,7 +117,8 @@ class StreamingXmlParser {
 
     // Emit safely while keeping tail
     const safeLength = Math.max(0, this.buffer.length - 40);
-    const newText = this.buffer.slice(0, safeLength);
+    const newTextRaw = this.buffer.slice(0, safeLength);
+    const newText = stripKnownXmlTags(newTextRaw);
     if (newText) {
       this.extractedText += newText;
       this.buffer = this.buffer.slice(safeLength);
@@ -236,12 +281,12 @@ export async function streamAgent({
   // Final parse
   const rawXml = rawText.trim();
   const xml = extractResponseBlock(rawXml);
-  const reflection = extractTag(xml, 'internal_reflection');
-  const plan = extractTag(xml, 'action_plan');
-  let finalResponse = extractTag(xml, 'final_response');
-  let title = extractTag(xml, 'title') || parser.getTitle();
+  const reflection = extractTagLenient(xml, 'internal_reflection');
+  const plan = extractTagLenient(xml, 'action_plan');
+  let finalResponse = extractTagLenient(xml, 'final_response');
+  let title = extractTagLenient(xml, 'title') || parser.getTitle();
 
-  if (!finalResponse && xml) {
+  if (!finalResponse && xml && !xml.toLowerCase().includes('<final_response')) {
     // If no <final_response>, fall back to inner response content
     const inner = xml.replace(/^<response[^>]*>/, '').replace(/<\/response>$/, '').trim();
     if (inner) finalResponse = inner;
@@ -249,6 +294,7 @@ export async function streamAgent({
 
   // If still no finalResponse, fall back to accumulated streaming text
   if (!finalResponse) finalResponse = parser.getFullText();
+  finalResponse = stripKnownXmlTags(finalResponse || '');
 
   const assistantContent = provider === 'claude'
     ? { role: 'assistant', content: rawXml }
