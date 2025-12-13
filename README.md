@@ -41,10 +41,12 @@ twx ./video.mp4
 ## Estilos
 
 ```bash
-twx <url> musk      # Directo, técnico (default)
-twx <url> bukowski  # Crudo, sin filtro
-twx <url> brief     # 3 bullets
-twx <url> raw       # Solo transcripción
+twx <url> bukowski     # Crudo, sin filtro (default)
+twx <url> musk         # Directo, técnico
+twx <url> nunc         # Explica simple, literal (Sin Vueltas)
+twx <url> nunca        # Alias memorable
+twx <url> easy         # Alias corto
+twx <url> transcript   # Solo transcripción
 ```
 
 ---

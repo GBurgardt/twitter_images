@@ -1,6 +1,6 @@
 import { PROMPTS } from '../paths.js';
 
-const STYLE_PRESETS = { musk: '', bukowski: '' };
+const STYLE_PRESETS = { musk: '', bukowski: '', nunc: '' };
 const STYLE_ALIASES = {
   m: 'musk',
   mx: 'musk',
@@ -9,7 +9,15 @@ const STYLE_ALIASES = {
   musk: 'musk',
   buk: 'bukowski',
   bukowski: 'bukowski',
-  bk: 'bukowski'
+  bk: 'bukowski',
+  nunc: 'nunc',
+  nunca: 'nunc',
+  easy: 'nunc',
+  claro: 'nunc',
+  simple: 'nunc',
+  sinvueltas: 'nunc',
+  'sin-vueltas': 'nunc',
+  'sin_vueltas': 'nunc'
 };
 
 export function normalizeStyle(value) {
@@ -21,6 +29,6 @@ export function normalizeStyle(value) {
 export function resolveAgentPromptPath(style) {
   const key = normalizeStyle(style) || 'bukowski';
   if (key === 'bukowski') return PROMPTS.bukowski;
+  if (key === 'nunc') return PROMPTS.nunc;
   return PROMPTS.musk;
 }
-

@@ -7,6 +7,6 @@ export const PROJECT_ROOT = path.resolve(__dirname, '..');
 export const DEFAULT_SESSION_LOG = path.join(PROJECT_ROOT, 'current_session.txt');
 export const PROMPTS = {
   musk: path.join(PROJECT_ROOT, 'prompts/agent_prompt_musk.txt'),
-  bukowski: path.join(PROJECT_ROOT, 'prompts/agent_prompt_bukowski.txt')
+  bukowski: path.join(PROJECT_ROOT, 'prompts/agent_prompt_bukowski.txt'),
+  nunc: path.join(PROJECT_ROOT, 'prompts/agent_prompt_nunc.txt')
 };
-

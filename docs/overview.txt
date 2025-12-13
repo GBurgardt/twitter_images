@@ -3,11 +3,11 @@ twx - Twitter/X Media Insight CLI
 
 ¿Qué hace?
 - Toma un link o carpeta con medios (Twitter/X, YouTube, Instagram, otros) y extrae texto: OCR a imágenes (Mistral), transcribe audio/video (OpenAI Whisper), agrega contexto de metadatos.
-- Si hay texto, un agente IA (Gemini por defecto, o Claude si lo configuras) devuelve un insight en formato XML con reflexión, plan y respuesta final en voz “Musk” o “Bukowski”.
+- Si hay texto, un agente IA (Gemini por defecto, o Claude si lo configuras) devuelve un insight en formato XML con reflexión, plan y respuesta final en voz “Musk”, “Bukowski” o “NUNC (Sin Vueltas)”.
 - Guarda cada corrida en MongoDB para histórico y chat posterior (solo en modo Gemini).
 
 Uso típico
-- `twx <url>` o `twx <path>`; estilo por defecto: `bukowski`. Para Musk usa alias `m`, `mx`, `max`, `elon`, `musk` (el estilo no se guarda en config, se elige en cada comando).
+- `twx <url>` o `twx <path>`; estilo por defecto: `bukowski`. Para Musk usa alias `m`, `mx`, `max`, `elon`, `musk`. Para NUNC (Sin Vueltas) usa `nunc`, `nunca`, `easy`, `claro`, `simple`, `sinvueltas`.
 - Puedes añadir una directiva final: `twx <url> "<instrucción>"` (si el segundo argumento no es alias de estilo se usa como objetivo prioritario).
 - Para hilos de Twitter/X: `twx <url-del-tweet> --thread` usa el scraper remoto (https://superexplainer.app/twitter-api/scrape_thread/) y devuelve texto del hilo completo (límite: 100 tweets).
 - Alias Reddit: `twr <reddit_url>` (usa el mismo pipeline).
@@ -30,7 +30,7 @@ Archivos clave
 - `src/extract-text.js`: flujo principal (descarga, OCR/Whisper, agente IA, historial).
 - `src/config.js`: carga/guarda config y API keys.
 - `src/db.js`: persistencia MongoDB.
-- `prompts/agent_prompt_bukowski.txt` (default), `prompts/agent_prompt_musk.txt`: prompts base del agente (estructura XML, voz).
+- `prompts/agent_prompt_bukowski.txt` (default), `prompts/agent_prompt_musk.txt`, `prompts/agent_prompt_nunc.txt`: prompts base del agente (estructura XML, voz).
 
 Pipeline rápido
 1) Descargar contenido (yt-dlp para video/IG/YouTube; gallery-dl para otros).
@@ -39,5 +39,5 @@ Pipeline rápido
 4) Mostrar respuesta, guardar en historial, opcionalmente abrir chat (Gemini).
 
 Notas
-- Solo dos estilos soportados: musk y bukowski (por aliases: m/mx/max/elon/buk/bk).
+- Estilos soportados: musk, bukowski, nunc (aliases: m/mx/max/elon/musk, buk/bk/bukowski, nunc/nunca/easy/claro/simple/sinvueltas).
 - Salida del agente siempre en español, en bloque XML con <title>, <internal_reflection>, <action_plan>, <final_response>.
