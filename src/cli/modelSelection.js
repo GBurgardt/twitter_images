@@ -14,6 +14,7 @@ export function resolveModelSelection(raw) {
   if (!input) return null;
 
   const normalized = input.toLowerCase();
+  const normalizedLoose = normalized.replace(/[\s_]+/g, ' ').trim();
 
   const presets = {
     gemini: { provider: 'gemini', model: 'gemini-3-pro-preview' },
@@ -22,10 +23,14 @@ export function resolveModelSelection(raw) {
     'gemini-3-pro': { provider: 'gemini', model: 'gemini-3-pro-preview' },
     'gemini-3-pro-preview': { provider: 'gemini', model: 'gemini-3-pro-preview' },
 
-    opus: { provider: 'claude', model: 'claude-opus-4.5' },
-    claude: { provider: 'claude', model: 'claude-opus-4.5' },
-    'claude-opus': { provider: 'claude', model: 'claude-opus-4.5' },
-    'claude-opus-4.5': { provider: 'claude', model: 'claude-opus-4.5' },
+    opus: { provider: 'claude', model: 'claude-opus-4-5' },
+    claude: { provider: 'claude', model: 'claude-opus-4-5' },
+    'claude-opus': { provider: 'claude', model: 'claude-opus-4-5' },
+    'claude-opus-4-5': { provider: 'claude', model: 'claude-opus-4-5' },
+    'claude-opus-4.5': { provider: 'claude', model: 'claude-opus-4-5' },
+    'claude opus': { provider: 'claude', model: 'claude-opus-4-5' },
+    'claude opus 4.5': { provider: 'claude', model: 'claude-opus-4-5' },
+    'opus 4.5': { provider: 'claude', model: 'claude-opus-4-5' },
 
     openai: { provider: 'openai', model: 'gpt-5.2' },
     gpt: { provider: 'openai', model: 'gpt-5.2' },
@@ -34,7 +39,7 @@ export function resolveModelSelection(raw) {
     'gpt-5.2-chat-latest': { provider: 'openai', model: 'gpt-5.2-chat-latest' }
   };
 
-  const preset = presets[normalized];
+  const preset = presets[normalized] || presets[normalizedLoose];
   if (preset) return preset;
 
   if (normalized.startsWith('gpt-') || (normalized.startsWith('o') && !normalized.startsWith('opus'))) {
@@ -50,7 +55,6 @@ export function resolveModelSelection(raw) {
   const provider = normalizeProviderName(normalized);
   return {
     provider,
-    model: provider === 'openai' ? 'gpt-5.2' : provider === 'claude' ? 'claude-opus-4.5' : 'gemini-3-pro-preview'
+    model: provider === 'openai' ? 'gpt-5.2' : provider === 'claude' ? 'claude-opus-4-5' : 'gemini-3-pro-preview'
   };
 }
-

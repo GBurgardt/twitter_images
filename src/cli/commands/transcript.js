@@ -55,7 +55,8 @@ export async function handleTranscriptCommand(options) {
   const openaiClient = new OpenAI({ apiKey: config.openaiApiKey });
   const downloadRoot = config.downloadRoot || path.join(os.tmpdir(), 'twx-transcript');
 
-  const spin = ui.spinner('Capturando audio...');
+  const transcribeModel = config.transcribeModel || 'whisper-1';
+  const spin = ui.spinner(`Capturando audio... (${transcribeModel})`);
 
   try {
     ui.debug('Transcript: downloading audio from', url);
@@ -81,7 +82,7 @@ export async function handleTranscriptCommand(options) {
     const stats = await fs.stat(audioPath);
     ui.debug('Audio downloaded:', audioPath, 'size:', stats.size);
 
-    spin.update('Transcribing with Whisper...');
+    spin.update(`Transcribing with Whisper... (${transcribeModel})`);
 
     const transcript = await transcribeMedia({
       openaiClient,
@@ -108,4 +109,3 @@ export async function handleTranscriptCommand(options) {
     errors.show(error, { verbose: options.verbose });
   }
 }
-

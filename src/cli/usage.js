@@ -87,8 +87,11 @@ export function showVerboseUsage() {
   console.log(`${s}${style.primary('Models')}`);
   console.log('');
   console.log(`${s}${s}${accent('gpt-5.2')}               ${dim('OpenAI (default)')}`);
-  console.log(`${s}${s}${accent('opus')}                  ${dim('Claude Opus 4.5')}`);
-  console.log(`${s}${s}${accent('gemini')}                ${dim('Gemini Pro')}`);
+  console.log(`${s}${s}${accent('gpt-5.2-pro')}           ${dim('OpenAI')}`);
+  console.log(`${s}${s}${accent('opus')}                  ${dim('Claude Opus 4.5 (alias)')}`);
+  console.log(`${s}${s}${accent('claude-opus-4-5')}        ${dim('Claude Opus 4.5')}`);
+  console.log(`${s}${s}${accent('gemini')}                ${dim('Gemini 3 Pro (alias)')}`);
+  console.log(`${s}${s}${accent('gemini-3-pro-preview')}   ${dim('Gemini 3 Pro')}`);
 
   console.log('');
   console.log(`${s}${style.primary('Options')}`);

@@ -17,14 +17,17 @@ import { runInsightAgent } from '../agent/runInsightAgent.js';
 import { persistRun } from '../persist.js';
 import { estimateOpenAICostUSD, formatUSD } from '../../cost.js';
 import { stripXmlTags } from '../../text/stripXmlTags.js';
+import { maskConfig } from '../../system/maskConfig.js';
+import { resolveAgentModel } from '../agent/resolveAgentModel.js';
 
 export async function handleAnalyzeCommand(options) {
   const config = await loadConfig();
   const overrideSelection = resolveModelSelection(options.modelOverride);
   const agentProvider = overrideSelection?.provider || normalizeProviderName(config.agentProvider || 'openai');
   const effectiveConfig = overrideSelection?.model ? { ...config, agentModel: overrideSelection.model } : config;
+  const { model: agentModel } = resolveAgentModel({ provider: agentProvider, config: effectiveConfig });
 
-  ui.debug('Config loaded:', { ...config, mistralApiKey: '***', geminiApiKey: '***', anthropicApiKey: '***', openaiApiKey: '***' });
+  ui.debug('Config loaded:', maskConfig(config));
   if (overrideSelection) ui.debug('Model override:', overrideSelection);
   ui.debug('Options:', options);
 
@@ -40,7 +43,7 @@ export async function handleAnalyzeCommand(options) {
   const agentAvailable =
     agentProvider === 'claude' ? Boolean(anthropicClient) : agentProvider === 'openai' ? Boolean(openaiClient) : Boolean(geminiClient);
 
-  const spin = ui.spinner('Leyendo...');
+  const spin = ui.spinner(agentModel ? `Reading... (${agentModel})` : 'Reading...');
 
   try {
     const { items: mediaItems, cleanup } = await collectMediaItems(options, config, {
@@ -68,7 +71,8 @@ export async function handleAnalyzeCommand(options) {
       const absolutePath = path.resolve(item.path);
       const relativePath = path.relative(process.cwd(), absolutePath) || absolutePath;
 
-      spin.update(`Processing ${i + 1}/${mediaItems.length}...`);
+      const opModel = item.type === 'image' ? config.ocrModel : item.type === 'video' || item.type === 'audio' ? config.transcribeModel : null;
+      spin.update(opModel ? `Processing ${i + 1}/${mediaItems.length}... (${opModel})` : `Processing ${i + 1}/${mediaItems.length}...`);
       ui.debug('Processing:', relativePath, 'type:', item.type);
 
       try {
@@ -141,7 +145,7 @@ export async function handleAnalyzeCommand(options) {
             : null;
 
         if (agentData?.finalResponse && !agentResult.streamed) {
-          ui.showResult(stripXmlTags(agentData.finalResponse), { title: agentData.title || null });
+          ui.showResult(stripXmlTags(agentData.finalResponse), { title: agentData.title || null, model: agentResult.meta?.model || null });
         }
 
         if (process.stdout.isTTY && costEstimate) {
@@ -200,4 +204,3 @@ export async function handleAnalyzeCommand(options) {
     process.exit(1);
   }
 }
-

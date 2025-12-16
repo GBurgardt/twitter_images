@@ -12,35 +12,16 @@ import { streamAgent } from '../../agent/streamAgent.js';
 import { createBoxedStreamer, createSmoothWriter } from '../streamBox.js';
 import { normalizeStyle, resolveAgentPromptPath } from '../style.js';
 import { maskConfig } from '../../system/maskConfig.js';
+import { resolveAgentModel } from './resolveAgentModel.js';
 
 export async function runInsightAgent({ provider, results, style, config, directive }) {
   const normalizedStyle = normalizeStyle(style) || 'bukowski';
   const promptPath = resolveAgentPromptPath(normalizedStyle);
   const promptSource = await fs.readFile(promptPath, 'utf8');
 
-  const providerKey = provider === 'claude' ? 'claude' : provider === 'openai' ? 'openai' : 'gemini';
-  const defaultGeminiModel = 'gemini-3-pro-preview';
-  const defaultClaudeModel = 'claude-opus-4.5';
-  const defaultOpenAIModel = 'gpt-5.2';
+  const { provider: providerKey, model } = resolveAgentModel({ provider, config });
 
-  const configModel = (config.agentModel || '').toString();
-  const configModelLower = configModel.toLowerCase();
-  const looksLikeOpenAIModel = configModelLower.startsWith('gpt-') || (configModelLower.startsWith('o') && !configModelLower.startsWith('opus'));
-
-  const model =
-    providerKey === 'claude'
-      ? configModelLower.includes('claude')
-        ? configModel
-        : defaultClaudeModel
-      : providerKey === 'openai'
-        ? looksLikeOpenAIModel
-          ? configModel
-          : defaultOpenAIModel
-        : configModelLower.includes('gemini')
-          ? configModel
-          : defaultGeminiModel;
-
-  const spin = ui.spinner('Analyzing...');
+  const spin = ui.spinner(model ? `Analyzing... (${model})` : 'Analyzing...');
 
   let payload = '';
 

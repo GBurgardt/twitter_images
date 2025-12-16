@@ -45,6 +45,11 @@ export async function streamAgent({
   onToken = () => {},
   onStartStreaming = () => {}
 }) {
+  const toPositiveInt = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+  };
+
   const parser = new StreamingFinalResponseParser();
   let rawText = '';
   let started = false;
@@ -95,15 +100,35 @@ export async function streamAgent({
   // === Provider specific streaming ===
   if (provider === 'claude') {
     const client = new Anthropic({ apiKey: config.anthropicApiKey });
-    const stream = client.messages.stream({
-      model,
-      system: promptSource,
-      messages: [...history, { role: 'user', content: payload }],
-      max_tokens: config.agentMaxOutputTokens || 64000,
-      temperature: 1
-    });
-    stream.on('text', handleChunk);
-    await stream.finalMessage();
+    const requested = toPositiveInt(config.agentMaxOutputTokens) ?? 64000;
+    const hardCap = 64000; // Claude Opus 4.5 max output tokens (Anthropic API rejects > 64000)
+    let maxTokens = Math.min(requested, hardCap);
+
+    const run = async () => {
+      const stream = client.messages.stream({
+        model,
+        system: promptSource,
+        messages: [...history, { role: 'user', content: payload }],
+        max_tokens: maxTokens,
+        temperature: 1
+      });
+      stream.on('text', handleChunk);
+      await stream.finalMessage();
+    };
+
+    try {
+      await run();
+    } catch (err) {
+      const msg = err?.error?.error?.message || err?.message || '';
+      const m = msg.match(/max_tokens:\s*(\d+)\s*>\s*(\d+)/i);
+      const allowed = m ? toPositiveInt(m[2]) : null;
+      if (allowed && allowed > 0 && allowed < maxTokens) {
+        maxTokens = allowed;
+        await run();
+      } else {
+        throw err;
+      }
+    }
   } else if (provider === 'openai') {
     if (!config.openaiApiKey) {
       throw new Error('Missing OPENAI_API_KEY');

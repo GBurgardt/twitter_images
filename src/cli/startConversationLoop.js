@@ -7,6 +7,7 @@ import { extractResponseText } from '../agent/extractResponseText.js';
 import { maskConfig } from '../system/maskConfig.js';
 import { stripXmlTags } from '../text/stripXmlTags.js';
 import { runCliChatSession } from './chatSession.js';
+import { resolveAgentModel } from './agent/resolveAgentModel.js';
 
 export async function startConversationLoop({ provider, results, options, config, conversationHistory, runId = null }) {
   const normalizedStyle = normalizeStyle(options.style) || 'bukowski';
@@ -14,14 +15,7 @@ export async function startConversationLoop({ provider, results, options, config
   const promptSource = await fs.readFile(promptPath, 'utf8');
   const providerKey = normalizeProviderName(provider || config.agentProvider || 'openai');
 
-  const modelRaw = (config.agentModel || '').toString();
-  const modelLower = modelRaw.toLowerCase();
-  const chatModel =
-    providerKey === 'claude'
-      ? (modelLower.includes('claude') ? modelRaw : 'claude-opus-4.5')
-      : providerKey === 'openai'
-        ? (modelLower.startsWith('gpt-') || (modelLower.startsWith('o') && !modelLower.startsWith('opus')) ? modelRaw : 'gpt-5.2')
-        : (modelLower.includes('gemini') ? modelRaw : 'gemini-3-pro-preview');
+  const { model: chatModel } = resolveAgentModel({ provider: providerKey, config });
 
   if (providerKey === 'openai' && !config.openaiApiKey) {
     errors.warn('Missing OpenAI API key for chat.', { verbose: options.verbose, technical: 'Set OPENAI_API_KEY or run "twx config".' });
@@ -52,4 +46,3 @@ export async function startConversationLoop({ provider, results, options, config
     maskConfig
   });
 }
-

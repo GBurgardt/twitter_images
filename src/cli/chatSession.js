@@ -46,7 +46,7 @@ export async function runCliChatSession({
       break;
     }
 
-    const spin = ui.spinner('Thinking...');
+    const spin = ui.spinner(model ? `Thinking... (${model})` : 'Thinking...');
 
     try {
       const payload = buildPayload({
@@ -163,7 +163,7 @@ export async function runCliChatSession({
 
       const cleanResponse = stripXmlTags(agentData?.finalResponse || '');
       if (cleanResponse) {
-        if (!streamed) ui.showResult(cleanResponse, { title: 'Response' });
+        if (!streamed) ui.showResult(cleanResponse, { title: 'Response', model });
         conversationHistory = history || conversationHistory;
 
         // Save to database

@@ -79,12 +79,25 @@ twx config --reset  # Empezar de cero
 
 ---
 
+## Modelos
+
+```bash
+twx setmodel             # Elegir modelo (interactive)
+twx setmodel opus        # Claude Opus 4.5
+twx setmodel gemini      # Gemini 3 Pro
+twx setmodel gpt-5.2     # OpenAI GPT-5.2
+twx <url> --model opus   # Override por corrida
+```
+
+---
+
 ## Qué necesita
 
 | Key | Para qué | Requerida |
 |-----|----------|-----------|
 | Mistral | Leer imágenes (OCR) | Sí |
 | Gemini | Análisis con IA | Recomendada |
+| Anthropic (Claude) | Análisis con IA (Claude Opus 4.5) | Opcional |
 | OpenAI | Transcribir audio | Opcional |
 
 ---
