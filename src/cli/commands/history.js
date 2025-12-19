@@ -50,7 +50,7 @@ export async function handleShowCommand(id, options = {}) {
         console.log('');
         console.log(`  \x1b[2mYou: ${conv.question}\x1b[0m`);
         console.log('');
-        ui.showResult(stripXmlTags(conv.answer || ''));
+        ui.showResult(stripXmlTags(conv.answer || ''), { markdown: false });
       }
     }
 

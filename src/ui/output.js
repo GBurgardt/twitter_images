@@ -26,7 +26,17 @@ marked.use(
 export function showResult(text, options = {}) {
   if (!text?.trim()) return;
 
-  const { title = null, model = null, showBox = true } = options;
+  const { title = null, model = null, showBox = true, markdown = true, stripAnsi: shouldStripAnsi = true } = options;
+
+  const stripAnsiCodes = (input) =>
+    input
+      ? input
+          .toString()
+          .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+          .replace(/\x1B\][^\u0007]*(\u0007|\x1B\\)/g, '')
+      : '';
+
+  const safeText = shouldStripAnsi ? stripAnsiCodes(text) : text;
 
   if (showBox) {
     // Use the elegant result box
@@ -34,8 +44,8 @@ export function showResult(text, options = {}) {
     const boxWidth = Math.min(termWidth - 4, Math.floor(termWidth * 0.7));
     const contentWidth = boxWidth - 6;
 
-    // Render markdown
-    const rendered = marked.parse(text).trim();
+    // Render markdown (optional)
+    const rendered = (markdown ? marked.parse(safeText) : safeText).trim();
 
     // Wrap content
     const wrapped = wrapAnsi(rendered, contentWidth, { hard: true, trim: false });
@@ -48,7 +58,7 @@ export function showResult(text, options = {}) {
   } else {
     // Simple output without box
     console.log('');
-    const rendered = marked.parse(text).trim();
+    const rendered = (markdown ? marked.parse(safeText) : safeText).trim();
     console.log(rendered);
     console.log('');
   }

@@ -43,7 +43,7 @@ export function showHistoryItem(run, options = {}) {
 
   // Content
   if (run.finalResponse) {
-    showResult(stripXmlTags(run.finalResponse));
+    showResult(stripXmlTags(run.finalResponse), { markdown: false });
   } else if (run.results?.some((r) => r.text)) {
     const combined = run.results
       .filter((r) => r.text)
