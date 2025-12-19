@@ -13,7 +13,6 @@ import {
   style,
   symbols,
   spacing,
-  gradients,
   relativeTime,
   truncate,
   truncateWords,
@@ -87,16 +86,13 @@ export async function showHistoryList(runs, options = {}) {
   let statusLine = '';
 
   const sorted = sortRuns(runs);
-  const listLimit = getHalfScreenListLimit();
+  const listLimit = getListLimit();
 
   while (true) {
     if (process.stdout.isTTY) console.clear();
-    console.log(brandHeader());
+    // Logo eliminado - el contenido es la interfaz
 
     const viewRuns = favoritesOnly ? sorted.filter((r) => r.isFavorite) : sorted;
-
-    console.log(`${spacing.indent}${style.header('LIBRARY')}`);
-    console.log('');
 
     const choices = buildLibraryChoices(viewRuns, { favoritesOnly });
 
@@ -111,8 +107,14 @@ export async function showHistoryList(runs, options = {}) {
       columns: process.stdout.columns || 80,
       limit: listLimit,
       footer: () => {
-        const hint = `${style.dim('↑↓ Navigate')}  ${style.dim('Enter Open')}  ${style.dim('f Favorite')}  ${style.dim('F Favorites')}  ${style.dim('/ Search')}  ${style.dim('q Quit')}`;
-        return statusLine ? `${hint}\n${spacing.indent}${statusLine}` : hint;
+        const total = viewRuns.length;
+        const modeIndicator = favoritesOnly ? style.gold('★ favoritos') : '';
+        const count = style.muted(`${total} items`);
+        const hints = style.dim('↵ abrir · / buscar · f ★ · F filtrar · q salir');
+
+        let footer = modeIndicator ? `${modeIndicator}  ${count}  ${hints}` : `${count}  ${hints}`;
+        if (statusLine) footer = `${footer}\n${spacing.indent}${statusLine}`;
+        return footer;
       },
     });
 
@@ -127,15 +129,16 @@ export async function showHistoryList(runs, options = {}) {
       }
 
       if (input === '/') {
-        // Jump to search without moving selection.
-        prompt.index = findChoiceIndex(prompt.choices, '__search__') ?? prompt.index;
-        await prompt.submit();
+        // Ir directo a búsqueda
+        await prompt.cancel();
+        prompt._searchRequested = true;
         return;
       }
 
       if (input === 'F') {
-        prompt.index = findChoiceIndex(prompt.choices, '__toggle_favorites__') ?? prompt.index;
-        await prompt.submit();
+        // Toggle favoritos directo
+        await prompt.cancel();
+        prompt._toggleFavoritesRequested = true;
         return;
       }
 
@@ -162,7 +165,6 @@ export async function showHistoryList(runs, options = {}) {
           if (choice && run) {
             const formatted = formatRunChoice(run);
             choice.message = formatted.label;
-            choice.hint = formatted.hint;
           }
 
           statusLine = isFav ? style.success(`Saved to favorites`) : style.muted('Removed from favorites');
@@ -181,23 +183,32 @@ export async function showHistoryList(runs, options = {}) {
     try {
       selected = await prompt.run();
     } catch {
+      // Verificar si fue una acción especial antes de salir
+      if (prompt._searchRequested) {
+        const found = await handleSearchEnquirer(sorted, onSelect);
+        if (found) return found;
+        continue;
+      }
+      if (prompt._toggleFavoritesRequested) {
+        favoritesOnly = !favoritesOnly;
+        continue;
+      }
       return null;
     }
 
-    if (!selected) return null;
-
-    if (selected === '__toggle_favorites__') {
-      favoritesOnly = !favoritesOnly;
-      console.log('');
-      continue;
-    }
-
-    if (selected === '__search__') {
+    // Verificar acciones especiales
+    if (prompt._searchRequested) {
       const found = await handleSearchEnquirer(sorted, onSelect);
       if (found) return found;
-      console.log('');
       continue;
     }
+
+    if (prompt._toggleFavoritesRequested) {
+      favoritesOnly = !favoritesOnly;
+      continue;
+    }
+
+    if (!selected) return null;
 
     if (onSelect) await onSelect(selected);
     return selected;
@@ -206,25 +217,39 @@ export async function showHistoryList(runs, options = {}) {
 
 /**
  * Format a run item as a choice for the selector
+ * Formato columnar: [FECHA]   [TÍTULO...]   [MSGS] [FAV]
  */
 function formatRunChoice(run) {
-  const date = run.updatedAt || run.createdAt
+  const termWidth = process.stdout.columns || 80;
+
+  // Anchos de columnas
+  const dateWidth = 5;      // "  5d", "ayer", " 11h"
+  const indicatorWidth = 8; // " (12) ★" o espacios
+  const padding = 6;        // espacios entre columnas + margen selector
+  const titleWidth = Math.max(25, termWidth - dateWidth - indicatorWidth - padding);
+
+  // Fecha - alineada a la derecha
+  const rawDate = run.updatedAt || run.createdAt
     ? relativeTime(new Date(run.updatedAt || run.createdAt))
     : '';
+  const date = rawDate.padStart(dateWidth);
+
+  // Título - truncado y con padding
   const title = getSmartTitle(run);
+  const titleTruncated = truncateWords(title, titleWidth);
+  const titlePadded = titleTruncated.padEnd(titleWidth);
+
+  // Indicadores - mensajes y favorito
   const msgCount = (run.conversations || []).length;
+  const msgBadge = msgCount > 0 ? `(${msgCount})`.padStart(4) : '    ';
+  const favIcon = run.isFavorite ? symbols.star : ' ';
 
-  // Indicators
-  const favorite = run.isFavorite ? style.gold(symbols.star) + ' ' : '  ';
-  const chatBadge = msgCount > 0 ? style.muted(` (${msgCount})`) : '';
-
-  // Title styling
-  const titleStyled = style.primary(truncateWords(title, 42));
+  // Composición final con estilos
+  const label = `${style.muted(date)}  ${style.primary(titlePadded)}  ${style.dim(msgBadge)} ${style.gold(favIcon)}`;
 
   return {
     value: run._id.toString(),
-    label: `${favorite}${titleStyled}${chatBadge}`,
-    hint: style.dim(date),
+    label,
   };
 }
 
@@ -305,7 +330,6 @@ async function handleSearchEnquirer(runs, onSelect) {
     return {
       name: formatted.value,
       message: formatted.label,
-      hint: formatted.hint,
       _run: run,
     };
   });
@@ -317,7 +341,7 @@ async function handleSearchEnquirer(runs, onSelect) {
     separator: '',
     rows: process.stdout.rows || 25,
     columns: process.stdout.columns || 80,
-    limit: getHalfScreenListLimit(),
+    limit: getListLimit(),
     footer: () => `${style.dim('Type to search')}  ${style.dim('Enter Open')}  ${style.dim('Esc Back')}`,
     suggest: (input, choices) => {
       const q = (input || '').trim();
@@ -393,74 +417,57 @@ function sortRuns(runs) {
 }
 
 function buildLibraryChoices(runs, { favoritesOnly }) {
-  const choices = [
-    {
-      name: '__search__',
-      message: `${style.accent(symbols.pointer)} ${style.secondary('Search')}`,
-      hint: style.dim('/'),
-    },
-    {
-      name: '__toggle_favorites__',
-      message: `${style.gold(symbols.star)} ${style.secondary(`Favorites only: ${favoritesOnly ? 'On' : 'Off'}`)}`,
-      hint: style.dim('F'),
-    },
-    {
-      name: '__spacer__',
-      message: style.dim(''),
-      disabled: true,
-    },
-  ];
-
+  // Si está en modo favoritos y no hay ninguno, mostrar mensaje
   if (favoritesOnly && runs.length === 0) {
-    choices.push({
+    return [{
       name: '__empty__',
-      message: style.muted('No favorites yet. Press F to show all.'),
+      message: style.muted('  No hay favoritos. Presiona F para ver todos.'),
       disabled: true,
-    });
-    return choices;
+    }];
   }
 
-  for (const run of runs) {
+  // Solo items - sin decoración, sin controles
+  return runs.map((run) => {
     const formatted = formatRunChoice(run);
-    choices.push({
+    return {
       name: formatted.value,
       message: formatted.label,
-      hint: formatted.hint,
-    });
-  }
-
-  return choices;
+    };
+  });
 }
 
-function findChoiceIndex(choices, name) {
-  if (!Array.isArray(choices)) return null;
-  const idx = choices.findIndex((c) => c?.name === name);
-  return idx >= 0 ? idx : null;
-}
-
-function getHalfScreenListLimit() {
+function getListLimit() {
   const rows = process.stdout.rows || 24;
-  // Rough budget: brand header (~10) + "LIBRARY" header (2) + footer (2) + breathing room (2)
-  const reserved = 16;
-  const available = Math.max(10, rows - reserved);
-  return Math.max(6, Math.floor(available / 2));
+  // Solo reservar espacio para footer (1 línea) + margen mínimo (2 líneas)
+  const reserved = 3;
+  return Math.max(10, rows - reserved);
 }
 
 function formatRunChoicePlain(run) {
-  const date = run.updatedAt || run.createdAt
+  const termWidth = process.stdout.columns || 80;
+
+  // Mismos anchos que formatRunChoice para consistencia
+  const dateWidth = 5;
+  const indicatorWidth = 8;
+  const padding = 6;
+  const titleWidth = Math.max(25, termWidth - dateWidth - indicatorWidth - padding);
+
+  const rawDate = run.updatedAt || run.createdAt
     ? relativeTime(new Date(run.updatedAt || run.createdAt))
     : '';
-  const title = getSmartTitle(run);
-  const msgCount = (run.conversations || []).length;
+  const date = rawDate.padStart(dateWidth);
 
-  const favorite = run.isFavorite ? `${symbols.star} ` : '';
-  const chatBadge = msgCount > 0 ? ` (${msgCount})` : '';
-  const titlePlain = truncateWords(title, 60);
+  const title = getSmartTitle(run);
+  const titleTruncated = truncateWords(title, titleWidth);
+  const titlePadded = titleTruncated.padEnd(titleWidth);
+
+  const msgCount = (run.conversations || []).length;
+  const msgBadge = msgCount > 0 ? `(${msgCount})`.padStart(4) : '    ';
+  const favIcon = run.isFavorite ? symbols.star : ' ';
 
   return {
     value: run._id.toString(),
-    label: `${favorite}${titlePlain}${chatBadge}`,
-    hint: date,
+    label: `${date}  ${titlePadded}  ${msgBadge} ${favIcon}`,
   };
 }
 
