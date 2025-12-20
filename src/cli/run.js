@@ -11,6 +11,7 @@ import { handleListCommand, handleShowCommand } from './commands/history.js';
 import { handleModelCommand } from './commands/model.js';
 import { handleTranscriptCommand } from './commands/transcript.js';
 import { handleAnalyzeCommand } from './commands/analyze.js';
+import { handleDualCommand } from './commands/dual.js';
 
 dotenv.config({ path: path.join(PROJECT_ROOT, '.env'), override: false });
 
@@ -58,6 +59,15 @@ export async function runCli(argv) {
 
   if (options.transcriptOnly) {
     await handleTranscriptCommand(options);
+    return;
+  }
+
+  if (options.dual) {
+    if (!options.inputPath && !options.url) {
+      showUsage();
+      return;
+    }
+    await handleDualCommand(options);
     return;
   }
 

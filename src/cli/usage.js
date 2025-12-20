@@ -73,6 +73,7 @@ export function showVerboseUsage() {
 
   const commands = [
     ['twx <url> "directive"', 'Add instructions for the AI'],
+    ['twx dual <url>', 'Dual mode (two styles)'],
     ['twx <url> --thread', 'Extract full Twitter thread'],
     ['twx <url> transcript', 'Get raw transcript only'],
     ['twx list', 'Show recent history'],
@@ -97,6 +98,7 @@ export function showVerboseUsage() {
   console.log(`${s}${style.primary('Options')}`);
   console.log('');
   console.log(`${s}${s}${accent('--clip 0:30-2:00')}      ${dim('Video segment')}`);
+  console.log(`${s}${s}${accent('--styles a,b')}          ${dim('Dual styles (dual mode)')}`);
   console.log(`${s}${s}${accent('--model <id>')}          ${dim('One-off model')}`);
   console.log(`${s}${s}${accent('--verbose')}             ${dim('Debug info')}`);
 

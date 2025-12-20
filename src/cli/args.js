@@ -19,6 +19,8 @@ export function parseArgs(argv) {
     modelCommand: false,
     modelValue: null,
     modelOverride: null,
+    dual: false,
+    dualStyles: null,
     showId: null,
     directive: null,
     thread: false,
@@ -61,6 +63,15 @@ export function parseArgs(argv) {
     if (arg === 'model' || arg === 'setmodel' || arg === 'provider') {
       options.modelCommand = true;
       options.modelValue = argv[++i] || null;
+      continue;
+    }
+
+    if (arg === 'dual' || arg === '--dual') {
+      options.dual = true;
+      continue;
+    }
+    if (arg === '--styles' || arg === '--dual-styles') {
+      options.dualStyles = argv[++i] || null;
       continue;
     }
 

@@ -38,6 +38,17 @@ twx ./video.mp4
 
 ---
 
+## Dual mode
+
+```bash
+twx dual <url> --styles bukowski,elon
+```
+
+Dos columnas. Dos estilos. Dos chats independientes.
+Tab cambia foco. Enter envía al panel activo. Ctrl+B envía a ambos.
+
+---
+
 ## Estilos
 
 ```bash
