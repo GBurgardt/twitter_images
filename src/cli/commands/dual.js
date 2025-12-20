@@ -58,7 +58,7 @@ function resolveDualStyles(raw) {
 }
 
 function buildFooterHint() {
-  return 'Tab switch  Enter send  Ctrl+B send both  PgUp/PgDn scroll  Home/End jump  Ctrl+C quit';
+  return 'Tab/Opt+Left/Right switch  Enter send  Ctrl+B both  Ctrl+U/D scroll  Ctrl+K/J top/bottom  Ctrl+C quit';
 }
 
 async function extractResults({ options, config, openaiClient, onStatus }) {
@@ -352,18 +352,21 @@ export async function handleDualCommand(options) {
     process.exit(0);
   };
 
-  dualUi.screen.key(['C-c', 'C-q', 'escape'], exitDual);
+  const bindKeys = (target) => {
+    target.key(['C-c', 'C-q', 'escape'], exitDual);
 
-  dualUi.screen.key(['tab'], () => {
-    setActive(activeIndex === 0 ? 1 : 0);
-  });
+    target.key(['tab'], () => setActive(activeIndex === 0 ? 1 : 0));
+    target.key(['S-tab'], () => setActive(activeIndex === 0 ? 1 : 0));
+    target.key(['C-l', 'M-left'], () => setActive(0));
+    target.key(['C-r', 'M-right'], () => setActive(1));
 
-  dualUi.screen.key(['C-l'], () => setActive(0));
-  dualUi.screen.key(['C-r'], () => setActive(1));
-  dualUi.screen.key(['pageup', 'S-up'], () => paneStates[activeIndex].pane.scrollPage(-1));
-  dualUi.screen.key(['pagedown', 'S-down'], () => paneStates[activeIndex].pane.scrollPage(1));
-  dualUi.screen.key(['home'], () => paneStates[activeIndex].pane.scrollToTop());
-  dualUi.screen.key(['end'], () => paneStates[activeIndex].pane.scrollToBottom());
+    target.key(['pageup', 'S-up', 'C-u'], () => paneStates[activeIndex].pane.scrollPage(-1));
+    target.key(['pagedown', 'S-down', 'C-d'], () => paneStates[activeIndex].pane.scrollPage(1));
+    target.key(['home', 'C-k'], () => paneStates[activeIndex].pane.scrollToTop());
+    target.key(['end', 'C-j'], () => paneStates[activeIndex].pane.scrollToBottom());
+  };
+
+  bindKeys(dualUi.screen);
 
   dualUi.screen.key(['C-b'], async () => {
     const active = paneStates[activeIndex];
@@ -393,7 +396,7 @@ export async function handleDualCommand(options) {
       if (idx !== -1) setActive(idx, { focus: false });
     });
 
-    state.pane.input.key(['C-c', 'C-q', 'escape'], exitDual);
+    bindKeys(state.pane.input);
 
     state.pane.input.on('submit', async (value) => {
       state.pane.input.clearValue();

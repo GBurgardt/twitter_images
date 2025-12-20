@@ -155,6 +155,7 @@ export function createDualUi({ leftLabel, rightLabel, footerText }) {
   const screen = blessed.screen({
     smartCSR: true,
     title: 'twx dual',
+    mouse: true,
   });
 
   let renderPending = false;
