@@ -58,7 +58,7 @@ function resolveDualStyles(raw) {
 }
 
 function buildFooterHint() {
-  return 'Tab switch  Enter send  Ctrl+B send both  Ctrl+C quit';
+  return 'Tab switch  Enter send  Ctrl+B send both  PgUp/PgDn scroll  Home/End jump  Ctrl+C quit';
 }
 
 async function extractResults({ options, config, openaiClient, onStatus }) {
@@ -347,10 +347,12 @@ export async function handleDualCommand(options) {
     focusLock = false;
   };
 
-  dualUi.screen.key(['C-c', 'q'], () => {
+  const exitDual = () => {
     dualUi.destroy();
     process.exit(0);
-  });
+  };
+
+  dualUi.screen.key(['C-c', 'C-q', 'escape'], exitDual);
 
   dualUi.screen.key(['tab'], () => {
     setActive(activeIndex === 0 ? 1 : 0);
@@ -358,6 +360,10 @@ export async function handleDualCommand(options) {
 
   dualUi.screen.key(['C-l'], () => setActive(0));
   dualUi.screen.key(['C-r'], () => setActive(1));
+  dualUi.screen.key(['pageup', 'S-up'], () => paneStates[activeIndex].pane.scrollPage(-1));
+  dualUi.screen.key(['pagedown', 'S-down'], () => paneStates[activeIndex].pane.scrollPage(1));
+  dualUi.screen.key(['home'], () => paneStates[activeIndex].pane.scrollToTop());
+  dualUi.screen.key(['end'], () => paneStates[activeIndex].pane.scrollToBottom());
 
   dualUi.screen.key(['C-b'], async () => {
     const active = paneStates[activeIndex];
@@ -386,6 +392,8 @@ export async function handleDualCommand(options) {
       const idx = paneStates.indexOf(state);
       if (idx !== -1) setActive(idx, { focus: false });
     });
+
+    state.pane.input.key(['C-c', 'C-q', 'escape'], exitDual);
 
     state.pane.input.on('submit', async (value) => {
       state.pane.input.clearValue();

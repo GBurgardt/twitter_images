@@ -112,6 +112,28 @@ function createPane(screen, requestRender, onStatusChange, { left, width, label,
     requestRender();
   };
 
+  const scrollBy = (lines) => {
+    if (!lines) return;
+    log.scroll(lines);
+    requestRender();
+  };
+
+  const scrollPage = (direction) => {
+    const height = typeof log.height === 'number' ? log.height : 10;
+    const page = Math.max(1, height - 3);
+    scrollBy(direction * page);
+  };
+
+  const scrollToTop = () => {
+    log.setScroll(0);
+    requestRender();
+  };
+
+  const scrollToBottom = () => {
+    log.setScrollPerc(100);
+    requestRender();
+  };
+
   return {
     log,
     input,
@@ -122,6 +144,10 @@ function createPane(screen, requestRender, onStatusChange, { left, width, label,
     setStatus,
     setActive,
     setLabel,
+    scrollBy,
+    scrollPage,
+    scrollToTop,
+    scrollToBottom,
   };
 }
 
