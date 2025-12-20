@@ -58,7 +58,7 @@ function resolveDualStyles(raw) {
 }
 
 function buildFooterHint() {
-  return 'Tab/Opt+Left/Right switch  Enter send  Ctrl+B both  Ctrl+U/D scroll  Ctrl+K/J top/bottom  Ctrl+C quit';
+  return 'Up/Down scroll 2 lines (sync)  Tab/Opt+Left/Right switch  Enter send  Ctrl+B both  Ctrl+U/D page  Ctrl+K/J top/bottom  Ctrl+C quit';
 }
 
 async function extractResults({ options, config, openaiClient, onStatus }) {
@@ -344,6 +344,7 @@ export async function handleDualCommand(options) {
     if (focusLock) return;
     focusLock = true;
     target.focus();
+    if (typeof target.readInput === 'function') target.readInput();
     focusLock = false;
   };
 
@@ -352,18 +353,47 @@ export async function handleDualCommand(options) {
     process.exit(0);
   };
 
+  const stopReading = (input) => {
+    if (!input || !input._reading || typeof input._done !== 'function') return;
+    input._done('stop');
+  };
+
+  const switchActive = (nextIndex) => {
+    const current = paneStates[activeIndex]?.pane?.input;
+    stopReading(current);
+    setActive(nextIndex);
+  };
+
+  const scrollBothBy = (lines) => {
+    paneStates.forEach((state) => state.pane.scrollBy(lines));
+  };
+
+  const scrollBothPage = (direction) => {
+    paneStates.forEach((state) => state.pane.scrollPage(direction));
+  };
+
+  const scrollBothTop = () => {
+    paneStates.forEach((state) => state.pane.scrollToTop());
+  };
+
+  const scrollBothBottom = () => {
+    paneStates.forEach((state) => state.pane.scrollToBottom());
+  };
+
   const bindKeys = (target) => {
     target.key(['C-c', 'C-q', 'escape'], exitDual);
 
-    target.key(['tab'], () => setActive(activeIndex === 0 ? 1 : 0));
-    target.key(['S-tab'], () => setActive(activeIndex === 0 ? 1 : 0));
-    target.key(['C-l', 'M-left'], () => setActive(0));
-    target.key(['C-r', 'M-right'], () => setActive(1));
+    target.key(['tab'], () => switchActive(activeIndex === 0 ? 1 : 0));
+    target.key(['S-tab'], () => switchActive(activeIndex === 0 ? 1 : 0));
+    target.key(['C-l', 'M-left'], () => switchActive(0));
+    target.key(['C-r', 'M-right'], () => switchActive(1));
 
-    target.key(['pageup', 'S-up', 'C-u'], () => paneStates[activeIndex].pane.scrollPage(-1));
-    target.key(['pagedown', 'S-down', 'C-d'], () => paneStates[activeIndex].pane.scrollPage(1));
-    target.key(['home', 'C-k'], () => paneStates[activeIndex].pane.scrollToTop());
-    target.key(['end', 'C-j'], () => paneStates[activeIndex].pane.scrollToBottom());
+    target.key(['up'], () => scrollBothBy(-2));
+    target.key(['down'], () => scrollBothBy(2));
+    target.key(['pageup', 'S-up', 'C-u'], () => scrollBothPage(-1));
+    target.key(['pagedown', 'S-down', 'C-d'], () => scrollBothPage(1));
+    target.key(['home', 'C-k'], () => scrollBothTop());
+    target.key(['end', 'C-j'], () => scrollBothBottom());
   };
 
   bindKeys(dualUi.screen);
@@ -393,7 +423,10 @@ export async function handleDualCommand(options) {
   for (const state of paneStates) {
     state.pane.input.on('focus', () => {
       const idx = paneStates.indexOf(state);
-      if (idx !== -1) setActive(idx, { focus: false });
+      if (idx !== -1) {
+        setActive(idx, { focus: false });
+        if (typeof state.pane.input.readInput === 'function') state.pane.input.readInput();
+      }
     });
 
     bindKeys(state.pane.input);
