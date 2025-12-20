@@ -145,7 +145,8 @@ export function promptSymbol() {
 }
 
 /**
- * Relative time formatting
+ * Relative time formatting - SIEMPRE formato corto para columnas alineadas
+ * Máximo 4 caracteres: "now", "5m", "23h", "1d", "2w", "3m"
  */
 export function relativeTime(date) {
   const now = new Date();
@@ -154,14 +155,16 @@ export function relativeTime(date) {
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
+  const weeks = Math.floor(days / 7);
+  const months = Math.floor(days / 30);
+
   if (seconds < 60) return 'now';
   if (minutes < 60) return `${minutes}m`;
   if (hours < 24) return `${hours}h`;
-  if (days === 1) return 'yesterday';
   if (days < 7) return `${days}d`;
-  const day = date.getDate();
-  const month = date.toLocaleString('en', { month: 'short' });
-  return `${day} ${month}`;
+  if (weeks < 5) return `${weeks}w`;
+  if (months < 12) return `${months}m`;
+  return `${Math.floor(months / 12)}y`;
 }
 
 /**

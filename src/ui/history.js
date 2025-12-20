@@ -7,6 +7,7 @@
 
 import Fuse from 'fuse.js';
 import enquirer from 'enquirer';
+import ansiEscapes from 'ansi-escapes';
 import { stripXmlTags } from '../text/stripXmlTags.js';
 import { showResult, showRawResult } from './output.js';
 import {
@@ -88,130 +89,153 @@ export async function showHistoryList(runs, options = {}) {
   const sorted = sortRuns(runs);
   const listLimit = getListLimit();
 
-  while (true) {
-    if (process.stdout.isTTY) console.clear();
-    // Logo eliminado - el contenido es la interfaz
+  // Entrar al alternate screen buffer - evita scroll y mantiene terminal limpia
+  if (process.stdout.isTTY) {
+    process.stdout.write(ansiEscapes.enterAlternativeScreen);
+    process.stdout.write(ansiEscapes.cursorHide);
+  }
 
-    const viewRuns = favoritesOnly ? sorted.filter((r) => r.isFavorite) : sorted;
+  // Función para salir limpiamente del alternate screen
+  const exitAltScreen = () => {
+    if (process.stdout.isTTY) {
+      process.stdout.write(ansiEscapes.cursorShow);
+      process.stdout.write(ansiEscapes.exitAlternativeScreen);
+    }
+  };
 
-    const choices = buildLibraryChoices(viewRuns, { favoritesOnly });
+  try {
+    while (true) {
+      // Limpiar y posicionar cursor arriba
+      process.stdout.write(ansiEscapes.cursorTo(0, 0));
+      process.stdout.write(ansiEscapes.eraseScreen);
 
-    const prompt = new Select({
-      message: '',
-      choices,
-      // Keep the UI calm: no leading "?" prompt line.
-      prefix: '',
-      separator: '',
-      promptLine: false,
-      rows: process.stdout.rows || 25,
-      columns: process.stdout.columns || 80,
-      limit: listLimit,
-      footer: () => {
-        const total = viewRuns.length;
-        const modeIndicator = favoritesOnly ? style.gold('★ favoritos') : '';
-        const count = style.muted(`${total} items`);
-        const hints = style.dim('↵ abrir · / buscar · f ★ · F filtrar · q salir');
+      const viewRuns = favoritesOnly ? sorted.filter((r) => r.isFavorite) : sorted;
+      const choices = buildLibraryChoices(viewRuns, { favoritesOnly });
 
-        let footer = modeIndicator ? `${modeIndicator}  ${count}  ${hints}` : `${count}  ${hints}`;
-        if (statusLine) footer = `${footer}\n${spacing.indent}${statusLine}`;
-        return footer;
-      },
-    });
+      const prompt = new Select({
+        message: '',
+        choices,
+        prefix: '',
+        separator: '',
+        promptLine: false,
+        rows: process.stdout.rows || 25,
+        columns: process.stdout.columns || 80,
+        limit: listLimit,
+        footer: () => {
+          const total = viewRuns.length;
+          const modeIndicator = favoritesOnly ? style.gold('★ favoritos') : '';
+          const count = style.muted(`${total} items`);
+          const hints = style.dim('↵ abrir · / buscar · f ★ · F filtrar · q salir');
 
-    const originalKeypress = prompt.keypress.bind(prompt);
-    prompt.keypress = async (input, event = {}) => {
-      // Any keypress clears transient status (unless we set it again).
-      statusLine = '';
+          let footer = modeIndicator ? `${modeIndicator}  ${count}  ${hints}` : `${count}  ${hints}`;
+          if (statusLine) footer = `${footer}\n${spacing.indent}${statusLine}`;
+          return footer;
+        },
+      });
 
-      if (input === 'q') {
-        await prompt.cancel();
-        return;
-      }
+      const originalKeypress = prompt.keypress.bind(prompt);
+      prompt.keypress = async (input, event = {}) => {
+        statusLine = '';
 
-      if (input === '/') {
-        // Ir directo a búsqueda
-        await prompt.cancel();
-        prompt._searchRequested = true;
-        return;
-      }
-
-      if (input === 'F') {
-        // Toggle favoritos directo
-        await prompt.cancel();
-        prompt._toggleFavoritesRequested = true;
-        return;
-      }
-
-      if (input === 'f') {
-        const focused = prompt.focused;
-        const id = focused?.name;
-        const isAction = id?.startsWith?.('__');
-        if (!id || isAction) return;
-
-        if (typeof onToggleFavorite !== 'function') {
-          statusLine = style.warning(`Favorites unavailable`);
-          await prompt.render();
+        if (input === 'q') {
+          await prompt.cancel();
           return;
         }
 
-        try {
-          const result = await onToggleFavorite(id);
-          const isFav = Boolean(result?.isFavorite);
-          const run = sorted.find((r) => r._id?.toString?.() === id);
-          if (run) run.isFavorite = isFav;
+        if (input === '/') {
+          await prompt.cancel();
+          prompt._searchRequested = true;
+          return;
+        }
 
-          // Update the visible choice label in-place
-          const choice = prompt.choices.find((c) => c.name === id);
-          if (choice && run) {
-            const formatted = formatRunChoice(run);
-            choice.message = formatted.label;
+        if (input === 'F') {
+          await prompt.cancel();
+          prompt._toggleFavoritesRequested = true;
+          return;
+        }
+
+        if (input === 'f') {
+          const focused = prompt.focused;
+          const id = focused?.name;
+          const isAction = id?.startsWith?.('__');
+          if (!id || isAction) return;
+
+          if (typeof onToggleFavorite !== 'function') {
+            statusLine = style.warning(`Favorites unavailable`);
+            await prompt.render();
+            return;
           }
 
-          statusLine = isFav ? style.success(`Saved to favorites`) : style.muted('Removed from favorites');
-          await prompt.render();
-        } catch (err) {
-          statusLine = style.error(`Could not save favorite`);
-          await prompt.render();
+          try {
+            const result = await onToggleFavorite(id);
+            const isFav = Boolean(result?.isFavorite);
+            const run = sorted.find((r) => r._id?.toString?.() === id);
+            if (run) run.isFavorite = isFav;
+
+            const choice = prompt.choices.find((c) => c.name === id);
+            if (choice && run) {
+              const formatted = formatRunChoice(run);
+              choice.message = formatted.label;
+            }
+
+            statusLine = isFav ? style.success(`★ Guardado`) : style.muted('Removido de favoritos');
+            await prompt.render();
+          } catch (err) {
+            statusLine = style.error(`Error al guardar`);
+            await prompt.render();
+          }
+          return;
         }
-        return;
+
+        return await originalKeypress(input, event);
+      };
+
+      let selected;
+      try {
+        selected = await prompt.run();
+      } catch {
+        if (prompt._searchRequested) {
+          const found = await handleSearchEnquirer(sorted, onSelect);
+          if (found) {
+            exitAltScreen();
+            return found;
+          }
+          continue;
+        }
+        if (prompt._toggleFavoritesRequested) {
+          favoritesOnly = !favoritesOnly;
+          continue;
+        }
+        exitAltScreen();
+        return null;
       }
 
-      return await originalKeypress(input, event);
-    };
-
-    let selected;
-    try {
-      selected = await prompt.run();
-    } catch {
-      // Verificar si fue una acción especial antes de salir
       if (prompt._searchRequested) {
         const found = await handleSearchEnquirer(sorted, onSelect);
-        if (found) return found;
+        if (found) {
+          exitAltScreen();
+          return found;
+        }
         continue;
       }
+
       if (prompt._toggleFavoritesRequested) {
         favoritesOnly = !favoritesOnly;
         continue;
       }
-      return null;
+
+      if (!selected) {
+        exitAltScreen();
+        return null;
+      }
+
+      exitAltScreen();
+      if (onSelect) await onSelect(selected);
+      return selected;
     }
-
-    // Verificar acciones especiales
-    if (prompt._searchRequested) {
-      const found = await handleSearchEnquirer(sorted, onSelect);
-      if (found) return found;
-      continue;
-    }
-
-    if (prompt._toggleFavoritesRequested) {
-      favoritesOnly = !favoritesOnly;
-      continue;
-    }
-
-    if (!selected) return null;
-
-    if (onSelect) await onSelect(selected);
-    return selected;
+  } finally {
+    // Garantizar que siempre salimos del alternate screen
+    exitAltScreen();
   }
 }
 
@@ -255,49 +279,53 @@ function formatRunChoice(run) {
 
 /**
  * Get a smart title from the run data
+ * IMPORTANTE: Nunca debe contener newlines - rompe el formato columnar
  */
 function getSmartTitle(run) {
+  let title = 'Untitled';
+
   // Use explicit title if good
   if (run.title && run.title !== 'Untitled' && run.title.trim().length > 3 && !run.title.startsWith('http')) {
-    return cleanTitle(run.title);
+    title = cleanTitle(run.title);
   }
-
   // Extract from response
-  if (run.finalResponse) {
+  else if (run.finalResponse) {
     const firstLine = extractFirstLine(run.finalResponse);
     if (firstLine && firstLine.length > 5) {
-      return truncateWords(firstLine, 50);
+      title = truncateWords(firstLine, 50);
     }
   }
-
   // Extract from URL
-  if (run.source?.url) {
+  else if (run.source?.url) {
     const url = run.source.url;
     try {
       const parsed = new URL(url);
       const pathParts = parsed.pathname.split('/').filter(Boolean);
       if (pathParts.length > 0) {
-        return pathParts[pathParts.length - 1].slice(0, 30);
+        title = pathParts[pathParts.length - 1].slice(0, 30);
+      } else {
+        title = parsed.hostname;
       }
-      return parsed.hostname;
     } catch {
-      return truncate(url, 40);
+      title = truncate(url, 40);
     }
   }
 
-  return 'Untitled';
+  // CRÍTICO: Eliminar cualquier newline o whitespace extra que rompa columnas
+  return title.replace(/[\n\r]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 /**
- * Clean a title string
+ * Clean a title string - elimina markdown, URLs, y cualquier formato problemático
  */
 function cleanTitle(title) {
   if (!title) return 'Untitled';
   let clean = title;
-  clean = clean.replace(/!\[.*?\]\(.*?\)/g, '').trim(); // Remove markdown images
-  clean = clean.replace(/https?:\/\/[^\s]+/g, '').trim(); // Remove URLs
-  clean = clean.replace(/^#+\s*/, '').trim(); // Remove markdown headers
-  clean = clean.replace(/^[\*\-•]\s*/, '').trim(); // Remove list bullets
+  clean = clean.replace(/[\n\r]+/g, ' ');           // Newlines → espacio
+  clean = clean.replace(/!\[.*?\]\(.*?\)/g, '');    // Remove markdown images
+  clean = clean.replace(/https?:\/\/[^\s]+/g, '');  // Remove URLs
+  clean = clean.replace(/^#+\s*/, '');              // Remove markdown headers
+  clean = clean.replace(/^[\*\-•]\s*/, '');         // Remove list bullets
   clean = clean.replace(/<[^>]+>/g, '').trim(); // Remove HTML tags
   if (!clean || clean.length < 3) return 'Untitled';
   return clean;
